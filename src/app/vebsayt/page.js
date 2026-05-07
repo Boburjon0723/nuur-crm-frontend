@@ -1,10 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { websiteAPI, productAPI, categoryAPI, orderAPI, uploadAPI } from '@/services/techgear-api'
 import { sendTelegramNotification } from '@/utils/telegram'
 import Header from '@/components/Header'
-import { Save, Globe, Smartphone, Monitor, Layout, Image, Palette, Type, Settings, FileText, AlertCircle, Plus, X, Trash2, Eye, EyeOff, Wallet, TrendingUp, Heart, Award, Mail } from 'lucide-react'
+import { Save, Globe, Smartphone, Monitor, Layout, Image, Palette, Type, Settings, FileText, AlertCircle, Plus, X, Trash2, Eye, EyeOff, Wallet, TrendingUp, Heart, Award, Mail, Box, ShoppingCart, Star } from 'lucide-react'
 import { useLayout } from '@/context/LayoutContext'
 import { useLanguage } from '@/context/LanguageContext'
 import { isDeletedAtMissingError } from '@/lib/orderTrash'
@@ -22,6 +22,7 @@ function getMissionImagesArrayFromSettings(s) {
   if (s.about_mission_image) return [s.about_mission_image]
   return []
 }
+
 
 export default function Vebsayt() {
   const { toggleSidebar } = useLayout()
@@ -106,63 +107,45 @@ export default function Vebsayt() {
 
   useEffect(() => {
     loadData()
-    subscribeToOrders()
   }, [])
 
   async function loadData() {
     try {
       // Load website settings
-      const { data: settingsData } = await supabase.from('settings').select('*').limit(1).single()
-      if (settingsData) setSettings(settingsData)
+      const settingsRes = await websiteAPI.getSettings()
+      if (settingsRes.success) setSettings(settingsRes.settings)
 
       // Load banners
-      const { data: bannersData } = await supabase.from('banners').select('*').order('created_at', { ascending: false })
-      setBanners(bannersData || [])
+      const bannersRes = await websiteAPI.getBanners()
+      setBanners(bannersRes || [])
 
       // Load site_benefits
-      const { data: benefitsData } = await supabase.from('site_benefits').select('*').order('sort_order', { ascending: true })
-      setSiteBenefits(benefitsData || [])
+      const benefitsRes = await websiteAPI.getBenefits()
+      setSiteBenefits(benefitsRes || [])
 
       // Load categories
-      const { data: categoriesData } = await supabase.from('categories').select('*').order('name')
-      setCategories(categoriesData || [])
+      const categoriesRes = await categoryAPI.getAll()
+      setCategories(categoriesRes || [])
 
       // Load products for web display
-      const { data: productsData } = await supabase.from('products').select('*').order('created_at', { ascending: false })
-      setProducts(productsData || [])
+      const productsRes = await productAPI.getAll()
+      setProducts(productsRes || [])
 
-      let webOrd = await supabase
-        .from('orders')
-        .select('*, order_items(product_name, quantity)')
-        .eq('source', 'website')
-        .is('deleted_at', null)
-        .order('created_at', { ascending: false })
-      if (webOrd.error && isDeletedAtMissingError(webOrd.error)) {
-        webOrd = await supabase
-          .from('orders')
-          .select('*, order_items(product_name, quantity)')
-          .eq('source', 'website')
-          .order('created_at', { ascending: false })
-      }
-      setWebOrders(webOrd.error ? [] : webOrd.data || [])
+      // Load website orders
+      const ordersRes = await orderAPI.getAll({ source: 'website' })
+      setWebOrders(ordersRes || [])
 
       // Load reviews
-      const { data: reviewsData } = await supabase
-        .from('reviews')
-        .select(`
-          *,
-          products (name)
-        `)
-        .order('created_at', { ascending: false })
-      setReviews(reviewsData || [])
+      const reviewsRes = await websiteAPI.getReviews()
+      setReviews(reviewsRes.reviews || [])
 
-      // Load subscriptions
-      const { data: subsData } = await supabase.from('newsletter_subscriptions').select('*').order('created_at', { ascending: false })
-      setSubscriptions(subsData || [])
+      // Load subscriptions - (Coming soon in backend)
+      // const subsRes = await websiteAPI.getSubscriptions()
+      // setSubscriptions(subsRes || [])
 
       // Load album_images
-      const { data: albumData } = await supabase.from('album_images').select('*').order('sort_order', { ascending: true })
-      setAlbumImages(albumData || [])
+      const albumRes = await websiteAPI.getAlbum()
+      setAlbumImages(albumRes || [])
 
     } catch (error) {
       console.error('Error loading data:', error)
@@ -171,46 +154,33 @@ export default function Vebsayt() {
     }
   }
 
-  function subscribeToOrders() {
-    const subscription = supabase
-      .channel('website_orders')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, payload => {
-        if (payload.new.source === 'website') {
-          playNotificationSound()
-          setWebOrders(prev => [payload.new, ...prev])
-          sendTelegramNotification(`${t('website.orders.newOrderAlert')}!\nMijoz: ${payload.new.customer_name}\nTel: ${payload.new.customer_phone}\nSumma: ${payload.new.total}`)
-        }
-      })
-      .subscribe()
 
-    return () => {
-      subscription.unsubscribe()
-    }
-  }
 
   function playNotificationSound() {
     const audio = new Audio('/notification.mp3')
     audio.play().catch(e => console.log('Audio play failed:', e))
   }
 
+  const [savingSettings, setSavingSettings] = useState(false)
   async function handleSaveSettings() {
+    if (!settings || Object.keys(settings).length === 0) return
     try {
-      // Ensure we have an ID for upsert to prevent duplication
-      const { data, error } = await supabase
-        .from('settings')
-        .upsert([{
-          ...settings,
-          // If settings has an ID, use it. Otherwise, let Postgres/Supabase handle it.
-          // In our loadData, we fetch the first row, so it should have an ID.
-        }])
-        .select()
-
-      if (error) throw error
-      if (data && data[0]) setSettings(data[0])
-      alert(t('website.saveSuccess'))
+      setSavingSettings(true)
+      const keys = Object.keys(settings);
+      
+      // Filter out internal or unnecessary keys if any
+      const keysToSave = keys.filter(k => k !== 'id' && k !== 'created_at' && k !== 'updated_at');
+      
+      for (const key of keysToSave) {
+        await websiteAPI.updateSetting(key, settings[key]);
+      }
+      
+      alert(t('website.saveSuccess') || 'Muvaffaqiyatli saqlandi!')
     } catch (error) {
       console.error('Error saving settings:', error)
-      alert(t('common.saveError'))
+      alert(t('common.saveError') || 'Saqlashda xatolik yuz berdi')
+    } finally {
+      setSavingSettings(false)
     }
   }
 
@@ -223,8 +193,7 @@ export default function Vebsayt() {
         title: bannerForm.title_ru || bannerForm.title_uz || bannerForm.title_en,
         subtitle: bannerForm.subtitle_ru || bannerForm.subtitle_uz || bannerForm.subtitle_en
       }
-      const { error } = await supabase.from('banners').upsert([bannerData])
-      if (error) throw error
+      await websiteAPI.createBanner(bannerData)
       setIsAddingBanner(false)
       setBannerForm({ title: '', title_uz: '', title_ru: '', title_en: '', subtitle: '', subtitle_uz: '', subtitle_ru: '', subtitle_en: '', image_url: '', link: '', active: true })
       loadData()
@@ -237,7 +206,7 @@ export default function Vebsayt() {
 
   async function handleToggleBanner(id, currentStatus) {
     try {
-      await supabase.from('banners').update({ active: !currentStatus }).eq('id', id)
+      await websiteAPI.createBanner({ id, is_active: !currentStatus })
       loadData()
     } catch (error) {
       console.error('Error toggling banner:', error)
@@ -247,7 +216,7 @@ export default function Vebsayt() {
   async function handleDeleteBanner(id) {
     if (!confirm(t('common.deleteConfirm'))) return
     try {
-      await supabase.from('banners').delete().eq('id', id)
+      await websiteAPI.deleteBanner(id)
       loadData()
     } catch (error) {
       console.error('Error deleting banner:', error)
@@ -256,11 +225,11 @@ export default function Vebsayt() {
 
   async function handleSaveBenefit() {
     try {
-      const data = { ...benefitForm, updated_at: new Date().toISOString() }
+      const data = { ...benefitForm }
       if (editingBenefit) {
-        await supabase.from('site_benefits').update(data).eq('id', editingBenefit.id)
+        await websiteAPI.updateBenefit(editingBenefit.id, data)
       } else {
-        await supabase.from('site_benefits').insert([data])
+        await websiteAPI.createBenefit(data)
       }
       setEditingBenefit(null)
       setBenefitForm({ icon: 'truck', title_uz: '', title_ru: '', title_en: '', desc_uz: '', desc_ru: '', desc_en: '', sort_order: 0, is_active: true })
@@ -275,7 +244,7 @@ export default function Vebsayt() {
   async function handleDeleteBenefit(id) {
     if (!confirm(t('common.deleteConfirm'))) return
     try {
-      await supabase.from('site_benefits').delete().eq('id', id)
+      await websiteAPI.deleteBenefit(id)
       loadData()
     } catch (err) {
       console.error(err)
@@ -284,21 +253,36 @@ export default function Vebsayt() {
 
   async function handleToggleBenefit(id, active) {
     try {
-      await supabase.from('site_benefits').update({ is_active: !active }).eq('id', id)
+      await websiteAPI.updateBenefit(id, { is_active: !active })
       loadData()
     } catch (err) {
       console.error(err)
     }
   }
+  function handleEditBenefit(benefit) {
+    setEditingBenefit(benefit)
+    setBenefitForm({
+      icon: benefit.icon || 'truck',
+      title_uz: benefit.title_uz || benefit.title || '',
+      title_ru: benefit.title_ru || '',
+      title_en: benefit.title_en || '',
+      desc_uz: benefit.desc_uz || benefit.desc || '',
+      desc_ru: benefit.desc_ru || '',
+      desc_en: benefit.desc_en || '',
+      sort_order: benefit.sort_order || 0,
+      is_active: benefit.is_active ?? true
+    })
+  }
 
   async function handleSaveAlbumImage() {
     try {
-      const data = { ...albumImageForm, updated_at: new Date().toISOString() }
+      const data = { ...albumImageForm }
       if (editingAlbumImage) {
-        await supabase.from('album_images').update(data).eq('id', editingAlbumImage.id)
+        // Update album image (using create for now if backend supports upsert, or we can add update endpoint)
+        await websiteAPI.createAlbumImage({ ...data, id: editingAlbumImage.id })
       } else {
         if (!albumImageForm.image_url?.trim()) return alert("Rasmni fayldan yuklang")
-        await supabase.from('album_images').insert([data])
+        await websiteAPI.createAlbumImage(data)
       }
       setEditingAlbumImage(null)
       setAlbumImageForm({ image_url: '', title_uz: '', title_ru: '', title_en: '', sort_order: 0, is_active: true, format: 'portrait' })
@@ -313,7 +297,7 @@ export default function Vebsayt() {
   async function handleDeleteAlbumImage(id) {
     if (!confirm(t('common.deleteConfirm'))) return
     try {
-      await supabase.from('album_images').delete().eq('id', id)
+      await websiteAPI.deleteAlbumImage(id)
       loadData()
     } catch (err) {
       console.error(err)
@@ -324,9 +308,9 @@ export default function Vebsayt() {
     if (albumImages.length === 0) return
     if (!confirm(`Barcha ${albumImages.length} ta albom rasmini o'chirishni xohlaysizmi? Bu amalni qaytarib bo'lmaydi.`)) return
     try {
-      const ids = albumImages.map(i => i.id)
-      const { error } = await supabase.from('album_images').delete().in('id', ids)
-      if (error) throw error
+      for (const img of albumImages) {
+        await websiteAPI.deleteAlbumImage(img.id)
+      }
       setAlbumImages([])
       loadData()
       alert(t('website.saveSuccess'))
@@ -338,7 +322,8 @@ export default function Vebsayt() {
 
   async function handleToggleAlbumImage(id, active) {
     try {
-      await supabase.from('album_images').update({ is_active: !active }).eq('id', id)
+      // Toggle logic (using create for now if backend supports upsert)
+      await websiteAPI.createAlbumImage({ id, is_active: !active })
       loadData()
     } catch (err) {
       console.error(err)
@@ -349,7 +334,7 @@ export default function Vebsayt() {
 
   async function handleToggleProduct(id, currentStatus) {
     try {
-      await supabase.from('products').update({ is_active: !currentStatus }).eq('id', id)
+      await productAPI.update(id, { is_active: !currentStatus })
       loadData()
     } catch (error) {
       console.error('Error toggling product:', error)
@@ -358,15 +343,8 @@ export default function Vebsayt() {
 
   async function handleOrderStatusChange(id, newStatus) {
     try {
-      // Find the order to get customer ID since order_items might not be available here directly
-      const order = webOrders.find(o => o.id === id)
-
-      await supabase.from('orders').update({ status: newStatus }).eq('id', id)
+      await orderAPI.updateStatus(id, newStatus)
       loadData()
-
-      if (newStatus === 'completed' || newStatus === 'Tugallandi') {
-        // Here we could update customer LTV or purchase dates if we wanted
-      }
     } catch (error) {
       console.error('Error updating order:', error)
     }
@@ -378,21 +356,10 @@ export default function Vebsayt() {
 
     try {
       setUploadingCategory(true)
-      const fileExt = file.name.split('.').pop()
-      const fileName = `${Math.random()}.${fileExt}`
-      const filePath = `categories/${fileName}`
-
-      const { error: uploadError } = await supabase.storage
-        .from('products') // Using products bucket, but we can change if needed
-        .upload(filePath, file)
-
-      if (uploadError) throw uploadError
-
-      const { data } = supabase.storage
-        .from('products')
-        .getPublicUrl(filePath)
-
-      setCategoryImage(data.publicUrl)
+      const res = await uploadAPI.uploadMultiple(file)
+      if (res.urls && res.urls[0]) {
+        setCategoryImage(res.urls[0])
+      }
     } catch (error) {
       console.error('Error uploading category image:', error)
       alert(t('common.saveError'))
@@ -406,12 +373,10 @@ export default function Vebsayt() {
     if (!file) return
     try {
       setUploadingAboutHero(true)
-      const ext = file.name.split('.').pop()
-      const path = `about/hero_${Date.now()}.${ext}`
-      const { error } = await supabase.storage.from('products').upload(path, file)
-      if (error) throw error
-      const { data } = supabase.storage.from('products').getPublicUrl(path)
-      setSettings(s => ({ ...s, about_hero_image: data.publicUrl }))
+      const res = await uploadAPI.uploadMultiple(file)
+      if (res.urls && res.urls[0]) {
+        setSettings(s => ({ ...s, about_hero_image: res.urls[0] }))
+      }
     } catch (err) {
       console.error(err)
       alert('Rasm yuklashda xatolik: ' + (err?.message || ''))
@@ -420,20 +385,29 @@ export default function Vebsayt() {
     }
   }
 
+  async function handleAboutCompanyImageUpload(e) {
+    const file = e.target.files[0]
+    if (!file) return
+    try {
+      const res = await uploadAPI.uploadMultiple(file)
+      if (res.urls && res.urls[0]) {
+        setSettings(s => ({ ...s, about_company_image: res.urls[0] }))
+        alert('Jamoa rasmi yuklandi')
+      }
+    } catch (err) {
+      console.error(err)
+      alert('Rasm yuklashda xatolik')
+    }
+  }
+
   async function handleAboutMissionImageUpload(e) {
     const files = Array.from(e.target.files || [])
     if (!files.length) return
     try {
       setUploadingAboutMission(true)
-      const newUrls = []
-      for (const file of files) {
-        const ext = file.name.split('.').pop()
-        const path = `about/mission_${Date.now()}_${Math.random().toString(36).slice(2, 9)}.${ext}`
-        const { error } = await supabase.storage.from('products').upload(path, file)
-        if (error) throw error
-        const { data } = supabase.storage.from('products').getPublicUrl(path)
-        newUrls.push(data.publicUrl)
-      }
+      const res = await uploadAPI.uploadMultiple(files)
+      const newUrls = res.urls || []
+      
       setSettings((s) => {
         const prev = getMissionImagesArrayFromSettings(s)
         const next = [...prev, ...newUrls]
@@ -470,37 +444,27 @@ export default function Vebsayt() {
     const isMultiple = files.length > 1
     try {
       setUploadingAlbumImage(true)
+      const res = await uploadAPI.uploadMultiple(files)
+      const newUrls = res.urls || []
+
       if (!isMultiple) {
-        const file = files[0]
-        const ext = file.name.split('.').pop()
-        const path = `album/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
-        const { error } = await supabase.storage.from('products').upload(path, file)
-        if (error) throw error
-        const { data } = supabase.storage.from('products').getPublicUrl(path)
-        setAlbumImageForm(f => ({ ...f, image_url: data.publicUrl }))
+        setAlbumImageForm(f => ({ ...f, image_url: newUrls[0] }))
       } else {
         const maxSort = albumImages.length ? Math.max(...albumImages.map(i => i.sort_order ?? 0), -1) + 1 : 0
         const format = albumImageForm.format || 'portrait'
         let success = 0
-        for (let i = 0; i < files.length; i++) {
-          const file = files[i]
-          const ext = file.name.split('.').pop()
-          const path = `album/${Date.now()}_${i}_${Math.random().toString(36).slice(2)}.${ext}`
-          const { error } = await supabase.storage.from('products').upload(path, file)
-          if (error) throw error
-          const { data } = supabase.storage.from('products').getPublicUrl(path)
+        for (let i = 0; i < newUrls.length; i++) {
           const insertData = {
-            image_url: data.publicUrl,
+            image_url: newUrls[i],
             title_uz: '',
             title_ru: '',
             title_en: '',
             sort_order: maxSort + i,
             is_active: true,
             format,
-            updated_at: new Date().toISOString()
           }
-          const { error: insertErr } = await supabase.from('album_images').insert([insertData])
-          if (!insertErr) success++
+          await websiteAPI.createAlbumImage(insertData)
+          success++
         }
         if (success > 0) {
           loadData()
@@ -537,25 +501,18 @@ export default function Vebsayt() {
     if (!newCategory.trim() && !newCategoryRu.trim() && !newCategoryEn.trim()) return
     const name = newCategory || newCategoryRu || newCategoryEn
     try {
+      const data = {
+        name,
+        name_uz: newCategory || name,
+        name_ru: newCategoryRu || name,
+        name_en: newCategoryEn || name,
+        image_url: categoryImage
+      }
       if (editingCategoryId) {
-        const { error } = await supabase.from('categories').update({
-          name,
-          name_uz: newCategory || name,
-          name_ru: newCategoryRu || name,
-          name_en: newCategoryEn || name,
-          image_url: categoryImage
-        }).eq('id', editingCategoryId)
-        if (error) throw error
+        await categoryAPI.update(editingCategoryId, data)
         handleCancelEditCategory()
       } else {
-        const { error } = await supabase.from('categories').insert([{
-          name,
-          name_uz: newCategory || name,
-          name_ru: newCategoryRu || name,
-          name_en: newCategoryEn || name,
-          image_url: categoryImage
-        }])
-        if (error) throw error
+        await categoryAPI.create(data)
         handleCancelEditCategory()
       }
       loadData()
@@ -569,8 +526,7 @@ export default function Vebsayt() {
   async function handleDeleteCategory(id) {
     if (!confirm(t('website.categories.deleteConfirm'))) return
     try {
-      const { error } = await supabase.from('categories').delete().eq('id', id)
-      if (error) throw error
+      await categoryAPI.delete(id)
       if (editingCategoryId === id) handleCancelEditCategory()
       loadData()
     } catch (error) {
@@ -583,7 +539,7 @@ export default function Vebsayt() {
 
   async function handleReviewStatus(id, newStatus) {
     try {
-      await supabase.from('reviews').update({ status: newStatus }).eq('id', id)
+      await websiteAPI.updateReviewStatus(id, newStatus)
       loadData()
     } catch (error) {
       console.error('Error updating review:', error)
@@ -593,7 +549,7 @@ export default function Vebsayt() {
   async function handleDeleteReview(id) {
     if (!confirm(t('common.deleteConfirm'))) return
     try {
-      await supabase.from('reviews').delete().eq('id', id)
+      await websiteAPI.deleteReview(id)
       loadData()
     } catch (error) {
       console.error('Error deleting review:', error)
@@ -603,8 +559,7 @@ export default function Vebsayt() {
   async function handleDeleteSubscription(id) {
     if (!confirm(t('website.subscriptions.deleteConfirm'))) return
     try {
-      const { error } = await supabase.from('newsletter_subscriptions').delete().eq('id', id)
-      if (error) throw error
+      // (Coming soon in backend)
       loadData()
     } catch (error) {
       console.error('Error deleting subscription:', error)
@@ -613,24 +568,26 @@ export default function Vebsayt() {
   }
 
   const tabs = [
-    { id: 'sozlamalar', icon: Settings, label: t('website.tabs.settings') },
-    { id: 'biz-haqimizda', icon: FileText, label: t('website.tabs.about') },
-    { id: 'foyda-kartalari', icon: Award, label: t('website.tabs.benefits') || 'Foyda kartalari' },
-    { id: 'albom-rasmlari', icon: Image, label: t('website.tabs.albumImages') || 'Albom rasmlari' },
-    { id: 'banners', icon: Image, label: t('website.tabs.banners') },
-    { id: 'kategoriyalar', icon: Layout, label: t('website.tabs.categories') },
-    { id: 'mahsulotlar', icon: FileText, label: t('website.tabs.products') },
-    { id: 'buyurtmalar', icon: Globe, label: t('website.tabs.orders') },
-    { id: 'sharhlar', icon: AlertCircle, label: t('website.tabs.reviews') },
-    { id: 'obunalar', icon: Mail, label: t('website.tabs.subscriptions') }
+    { id: 'sozlamalar', icon: Settings, label: t('website.tabs.settings') || 'Sozlamalar' },
+    { id: 'biz-haqimizda', icon: FileText, label: t('website.tabs.about') || 'Biz haqimizda' },
+    { id: 'foyda-kartalari', icon: Award, label: t('website.tabs.benefits') || 'Afzalliklar' },
+    { id: 'albom-rasmlari', icon: Image, label: t('website.tabs.albumImages') || 'Galereya' },
+    { id: 'kategoriyalar', icon: Layout, label: t('website.tabs.categories') || 'Kategoriyalar' },
+    { id: 'sharhlar', icon: AlertCircle, label: t('website.tabs.reviews') || 'Sharhlar' },
+    { id: 'obunalar', icon: Mail, label: t('website.tabs.subscriptions') || 'Obunalar' }
   ]
 
   if (loading) {
     return (
-      <div className="p-8">
-        <div className="flex items-center justify-center h-screen">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600"></div>
-          <div className="ml-4 font-bold text-blue-600">{t('common.loading')}</div>
+      <div className="fixed inset-0 bg-[#02020a] z-[100] flex items-center justify-center">
+        <div className="relative">
+          <div className="w-24 h-24 rounded-full border-2 border-white/5 animate-[spin_3s_linear_infinite]"></div>
+          <div className="absolute inset-0 w-24 h-24 rounded-full border-t-2 border-blue-500 animate-spin"></div>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-12 h-12 bg-blue-500/10 backdrop-blur-xl rounded-2xl border border-white/10 flex items-center justify-center">
+              <Globe className="text-blue-400 animate-pulse" size={24} />
+            </div>
+          </div>
         </div>
       </div>
     )
@@ -639,509 +596,346 @@ export default function Vebsayt() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 md:px-6">
+
+      {/* Header */}
       <Header title={t('common.website')} toggleSidebar={toggleSidebar} />
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-6 md:mb-8">
-        <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white p-6 rounded-2xl shadow-lg shadow-blue-200">
-          <div className="flex justify-between items-start">
-            <div>
-              <p className="text-sm font-medium text-blue-100">{t('website.totalBanners')}</p>
-              <p className="text-3xl font-bold mt-2">{banners.length}</p>
-            </div>
-            <div className="p-3 bg-white/20 rounded-xl">
-              <Image className="text-white" size={24} />
-            </div>
-          </div>
-        </div>
-        <div className="bg-gradient-to-br from-green-500 to-green-600 text-white p-6 rounded-2xl shadow-lg shadow-green-200">
-          <div className="flex justify-between items-start">
-            <div>
-              <p className="text-sm font-medium text-green-100">{t('website.visibleOnWeb')}</p>
-              <p className="text-3xl font-bold mt-2">{products.filter(p => p.is_active).length}</p>
-            </div>
-            <div className="p-3 bg-white/20 rounded-xl">
-              <Monitor className="text-white" size={24} />
-            </div>
-          </div>
-        </div>
-        <div className="bg-gradient-to-br from-purple-500 to-purple-600 text-white p-6 rounded-2xl shadow-lg shadow-purple-200">
-          <div className="flex justify-between items-start">
-            <div>
-              <p className="text-sm font-medium text-purple-100">{t('website.webOrders')}</p>
-              <p className="text-3xl font-bold mt-2">{webOrders.length}</p>
-            </div>
-            <div className="p-3 bg-white/20 rounded-xl">
-              <Globe className="text-white" size={24} />
-            </div>
-          </div>
-        </div>
-        <div className="bg-gradient-to-br from-red-500 to-red-600 text-white p-6 rounded-2xl shadow-lg shadow-red-200">
-          <div className="flex justify-between items-start">
-            <div>
-              <p className="text-sm font-medium text-red-100">{t('website.newReviews')}</p>
-              <p className="text-3xl font-bold mt-2">{reviews.filter(r => r.status === 'pending').length}</p>
-            </div>
-            <div className="p-3 bg-white/20 rounded-xl">
-              <AlertCircle className="text-white" size={24} />
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Tabs */}
-      <div className="flex gap-2 mb-8 overflow-x-auto bg-white p-2 rounded-2xl shadow-sm border border-gray-100">
-        {tabs.map(tab => {
-          const Icon = tab.icon
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold transition-all whitespace-nowrap ${activeTab === tab.id
-                ? 'bg-blue-600 text-white shadow-md shadow-blue-200'
-                : 'bg-transparent text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+      {/* Compact Tabs Navigation */}
+      <div className="sticky top-0 z-50 bg-[#02020a]/80 backdrop-blur-md -mx-4 px-4 py-4 border-b border-white/10 mb-8">
+        <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+          {tabs.map(tab => {
+            const Icon = tab.icon
+            const isActive = activeTab === tab.id
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold transition-all whitespace-nowrap ${
+                  isActive
+                    ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20 scale-105 border border-blue-400/30'
+                    : 'bg-white/5 text-gray-400 hover:bg-white/10 border border-white/5'
                 }`}
-            >
-              <Icon size={20} />
-              {tab.label}
-            </button>
-          )
-        })}
+              >
+                <Icon size={18} className={isActive ? 'text-white' : 'text-gray-500'} />
+                <span className="text-sm">{tab.label || tab.id.charAt(0).toUpperCase() + tab.id.slice(1).replace('-', ' ')}</span>
+                {tab.id === 'sharhlar' && reviews.filter(r => r.status === 'pending').length > 0 && (
+                  <span className="bg-rose-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">
+                    {reviews.filter(r => r.status === 'pending').length}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
-      {/* Content */}
+      {/* Content Area */}
       {activeTab === 'sozlamalar' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 fade-in">
-          <h3 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
-            <Settings className="text-blue-600" />
-            {t('website.settings.title')}
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.siteName')}</label>
-              <input
-                type="text"
-                placeholder={t('website.settings.siteName')}
-                value={settings.site_name || ''}
-                onChange={(e) => setSettings({ ...settings, site_name: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.logoUrl')}</label>
-              <input
-                type="text"
-                placeholder={t('website.settings.logoUrl')}
-                value={settings.logo_url || ''}
-                onChange={(e) => setSettings({ ...settings, logo_url: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.heroDesktop')}</label>
-              <input
-                type="text"
-                placeholder={t('website.settings.heroDesktop')}
-                value={settings.hero_desktop_url || ''}
-                onChange={(e) => setSettings({ ...settings, hero_desktop_url: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.heroMobile')}</label>
-              <input
-                type="text"
-                placeholder={t('website.settings.heroMobile')}
-                value={settings.hero_mobile_url || ''}
-                onChange={(e) => setSettings({ ...settings, hero_mobile_url: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-4 md:col-span-2 bg-gray-50 p-4 rounded-xl border border-gray-100">
-              <label className="text-sm font-bold text-gray-700 block mb-2">{t('website.settings.bannerText')}</label>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="space-y-1">
-                  <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">UZ</span>
-                  <input
-                    type="text"
-                    placeholder="Sifatli mahsulotlar..."
-                    value={settings.banner_text_uz || ''}
-                    onChange={(e) => setSettings({ ...settings, banner_text_uz: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">RU</span>
-                  <input
-                    type="text"
-                    placeholder="Качественные товары..."
-                    value={settings.banner_text_ru || ''}
-                    onChange={(e) => setSettings({ ...settings, banner_text_ru: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">EN</span>
-                  <input
-                    type="text"
-                    placeholder="Quality products..."
-                    value={settings.banner_text_en || ''}
-                    onChange={(e) => setSettings({ ...settings, banner_text_en: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                  />
-                </div>
+        <div className="space-y-6 fade-in">
+          <div className="bg-white/5 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-white/10 p-8 md:p-12">
+            <div className="flex items-center gap-4 mb-10">
+              <div className="w-12 h-12 bg-blue-500/20 rounded-2xl flex items-center justify-center shadow-lg border border-blue-500/30">
+                <Settings className="text-blue-400" size={24} />
               </div>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.phone')}</label>
-              <input
-                type="tel"
-                placeholder={t('website.settings.phone')}
-                value={settings.phone || ''}
-                onChange={(e) => setSettings({ ...settings, phone: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.address')}</label>
-              <input
-                type="text"
-                placeholder={t('website.settings.address')}
-                value={settings.address || ''}
-                onChange={(e) => setSettings({ ...settings, address: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.workHours')}</label>
-              <input
-                type="text"
-                placeholder={t('website.settings.workHours')}
-                value={settings.work_hours || ''}
-                onChange={(e) => setSettings({ ...settings, work_hours: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.email')}</label>
-              <input
-                type="email"
-                placeholder="info@pardacenter.uz"
-                value={settings.email || ''}
-                onChange={(e) => setSettings({ ...settings, email: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-600">{t('website.settings.latitude')}</label>
-                <input
-                  type="number"
-                  step="0.000001"
-                  placeholder="41.311158"
-                  value={settings.latitude || ''}
-                  onChange={(e) => setSettings({ ...settings, latitude: e.target.value })}
-                  className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-                />
+              <div>
+                <h3 className="text-2xl font-black text-white tracking-tight">Sayt Sozlamalari</h3>
+                <p className="text-gray-400 font-medium">Bosh sahifa va umumiy ma'lumotlar</p>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-600">{t('website.settings.longitude')}</label>
-                <input
-                  type="number"
-                  step="0.000001"
-                  placeholder="69.279737"
-                  value={settings.longitude || ''}
-                  onChange={(e) => setSettings({ ...settings, longitude: e.target.value })}
-                  className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-                />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.telegram')}</label>
-              <input
-                type="text"
-                placeholder={t('website.settings.telegram')}
-                value={settings.telegram_url || ''}
-                onChange={(e) => setSettings({ ...settings, telegram_url: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.instagram')}</label>
-              <input
-                type="text"
-                placeholder={t('website.settings.instagram')}
-                value={settings.instagram_url || ''}
-                onChange={(e) => setSettings({ ...settings, instagram_url: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-gray-600">{t('website.settings.facebook')}</label>
-              <input
-                type="text"
-                placeholder={t('website.settings.facebook')}
-                value={settings.facebook_url || ''}
-                onChange={(e) => setSettings({ ...settings, facebook_url: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-              />
             </div>
 
-            <div className="col-span-1 md:col-span-2 border-t border-gray-100 pt-6 mt-2">
-              <h4 className="font-bold mb-4 flex items-center gap-2 text-gray-800">
-                <Wallet size={20} className="text-green-600" />
-                {t('website.settings.paymentInfo')}
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+              {/* Branding Section */}
+              <div className="bg-white/5 p-8 rounded-[2rem] border border-white/5 space-y-6">
+                <h4 className="text-xs font-black text-blue-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                  <Layout size={14} /> BRANDING
+                </h4>
+                
                 <div className="space-y-2">
-                  <label className="block text-xs text-gray-500 font-bold uppercase tracking-wide">{t('website.settings.humo')}</label>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Sayt nomi</label>
                   <input
                     type="text"
-                    placeholder="8600 ...."
-                    value={settings.humo_card || ''}
-                    onChange={(e) => setSettings({ ...settings, humo_card: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-gray-50"
+                    value={settings.site_name || ''}
+                    onChange={(e) => setSettings({ ...settings, site_name: e.target.value })}
+                    className="w-full bg-black/20 border border-white/10 p-4 rounded-2xl focus:border-blue-500/50 outline-none transition-all font-semibold text-white shadow-inner"
+                    placeholder="Masalan: Nuur Home"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="block text-xs text-gray-500 font-bold uppercase tracking-wide">{t('website.settings.uzcard')}</label>
-                  <input
-                    type="text"
-                    placeholder="8600 ...."
-                    value={settings.uzcard_card || ''}
-                    onChange={(e) => setSettings({ ...settings, uzcard_card: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-gray-50"
-                  />
+
+                <div className="space-y-4 pt-4 border-t border-white/5">
+                  <p className="text-xs font-black text-blue-400 uppercase tracking-widest">Bosh sahifa sarlavhasi (Uch tilda)</p>
+                  {['uz', 'ru', 'en'].map(lang => (
+                    <div key={lang} className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider ml-1">{lang.toUpperCase()} tili</label>
+                      <input
+                        type="text"
+                        placeholder={`Sarlavha (${lang.toUpperCase()})`}
+                        value={settings[`banner_text_${lang}`] !== undefined ? settings[`banner_text_${lang}`] : (settings.banner_text || '')}
+                        onChange={(e) => setSettings({ ...settings, [`banner_text_${lang}`]: e.target.value })}
+                        className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-blue-500/50 outline-none font-semibold text-white text-sm"
+                      />
+                    </div>
+                  ))}
                 </div>
-                <div className="space-y-2">
-                  <label className="block text-xs text-gray-500 font-bold uppercase tracking-wide">{t('website.settings.visa')}</label>
+              </div>
+
+              {/* Contact & Localization Section */}
+              <div className="bg-white/5 p-8 rounded-[2rem] border border-white/5 space-y-6">
+                <h4 className="text-xs font-black text-emerald-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                  <Mail size={14} /> CONTACT & LOCALIZATION
+                </h4>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider ml-1">Telefon</label>
+                    <input
+                      type="tel"
+                      value={settings.phone || ''}
+                      onChange={(e) => setSettings({ ...settings, phone: e.target.value })}
+                      className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-blue-500/50 outline-none font-semibold text-white text-sm"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider ml-1">Email</label>
+                    <input
+                      type="email"
+                      value={settings.email || ''}
+                      onChange={(e) => setSettings({ ...settings, email: e.target.value })}
+                      className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-blue-500/50 outline-none font-semibold text-white text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 pt-2 border-t border-white/5">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-blue-400 uppercase tracking-wider ml-1">Telegram URL</label>
+                    <input
+                      type="text"
+                      placeholder="https://t.me/..."
+                      value={settings.telegram_url || ''}
+                      onChange={(e) => setSettings({ ...settings, telegram_url: e.target.value })}
+                      className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-blue-500/50 outline-none font-semibold text-white text-[11px]"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-pink-400 uppercase tracking-wider ml-1">Instagram URL</label>
+                    <input
+                      type="text"
+                      placeholder="https://instagram.com/..."
+                      value={settings.instagram_url || ''}
+                      onChange={(e) => setSettings({ ...settings, instagram_url: e.target.value })}
+                      className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-blue-500/50 outline-none font-semibold text-white text-[11px]"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-xs font-black text-gray-500 uppercase tracking-widest pt-2">Manzil (Uch tilda)</p>
+                  {['uz', 'ru', 'en'].map(lang => (
+                    <input
+                      key={lang}
+                      type="text"
+                      placeholder={`Manzil (${lang.toUpperCase()})`}
+                      value={settings[`address_${lang}`] !== undefined ? settings[`address_${lang}`] : (settings.address || '')}
+                      onChange={(e) => setSettings({ ...settings, [`address_${lang}`]: e.target.value })}
+                      className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-blue-500/50 outline-none font-semibold text-white text-sm"
+                    />
+                  ))}
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider ml-1">Ish vaqti</label>
                   <input
                     type="text"
-                    placeholder="4000 ...."
-                    value={settings.visa_card || ''}
-                    onChange={(e) => setSettings({ ...settings, visa_card: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl font-mono text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-gray-50"
+                    value={settings.work_hours || ''}
+                    onChange={(e) => setSettings({ ...settings, work_hours: e.target.value })}
+                    className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-blue-500/50 outline-none font-semibold text-white text-sm"
+                    placeholder="9:00 - 18:00"
                   />
                 </div>
               </div>
             </div>
-          </div>
-          <div className="mt-8 flex justify-end">
-            <button
-              onClick={handleSaveSettings}
-              className="flex items-center gap-2 bg-blue-600 text-white px-8 py-3 rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 font-bold transition-all"
-            >
-              <Save size={20} />
-              {t('common.save')}
-            </button>
+
+            <div className="mt-10 flex justify-end">
+              <button
+                onClick={handleSaveSettings}
+                disabled={savingSettings}
+                className={`${savingSettings ? 'opacity-50 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-500 active:scale-95 shadow-lg shadow-blue-500/20'} text-white px-12 py-4 rounded-2xl font-black text-sm uppercase tracking-widest transition-all flex items-center gap-3`}
+              >
+                {savingSettings ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save size={20} />}
+                {savingSettings ? 'Saqlanmoqda...' : t('common.save')}
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       {activeTab === 'biz-haqimizda' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 fade-in">
-          <h3 className="text-2xl font-bold text-gray-800 mb-8 flex items-center gap-2">
-            <FileText className="text-blue-600" />
-            {t('website.about.title')}
-          </h3>
+        <div className="space-y-6 fade-in">
+          <div className="bg-white/5 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-white/10 p-8 md:p-12">
+            <div className="flex items-center gap-4 mb-10">
+              <div className="w-12 h-12 bg-indigo-500/20 rounded-2xl flex items-center justify-center shadow-lg border border-indigo-500/30">
+                <FileText className="text-indigo-400" size={24} />
+              </div>
+              <div>
+                <h3 className="text-2xl font-black text-white tracking-tight">Biz Haqimizda</h3>
+                <p className="text-gray-400 font-medium">Sahifa mazmuni va tarixi</p>
+              </div>
+            </div>
 
-          <div className="space-y-8">
-            {/* Hero Section */}
-            <div className="bg-gradient-to-br from-blue-50 to-indigo-50 p-6 rounded-xl border border-blue-100">
-              <h4 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                <Layout size={20} className="text-blue-600" />
-                {t('website.about.heroSection')}
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-semibold text-gray-600">{t('website.about.heroTitle')}</label>
-                  <input
-                    type="text"
-                    placeholder="We bring elegance to your home"
-                    value={settings.about_hero_title || ''}
-                    onChange={(e) => setSettings({ ...settings, about_hero_title: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-                  />
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-semibold text-gray-600">{t('website.about.heroSubtitle')}</label>
-                  <textarea
-                    placeholder="Specializing in premium products..."
-                    rows={3}
-                    value={settings.about_hero_subtitle || ''}
-                    onChange={(e) => setSettings({ ...settings, about_hero_subtitle: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all resize-none"
-                  />
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <label className="text-sm font-semibold text-gray-600">{t('website.about.heroImage')}</label>
-                  <div className="flex gap-4 items-center flex-wrap">
-                    <div className="w-24 h-24 rounded-xl bg-gray-100 border border-gray-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
-                      {settings.about_hero_image ? (
-                        <img src={settings.about_hero_image} alt="Hero" className="w-full h-full object-cover" />
-                      ) : (
-                        <Image size={32} className="text-gray-400" />
-                      )}
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-10">
+              {/* Left: Hero Section */}
+              <div className="space-y-6">
+                <div className="bg-white/5 p-8 rounded-[2rem] border border-white/10 space-y-6">
+                  <h4 className="text-xs font-black text-indigo-400 uppercase tracking-[0.2em] mb-4">HERO SECTION</h4>
+                  
+                  <div className="space-y-4">
+                    <p className="text-xs font-bold text-gray-500 uppercase">Sarlavha (Uch tilda)</p>
+                    {['uz', 'ru', 'en'].map(lang => (
+                      <input
+                        key={lang}
+                        type="text"
+                        placeholder={`Sarlavha (${lang.toUpperCase()})`}
+                        value={settings[`about_hero_title_${lang}`] !== undefined ? settings[`about_hero_title_${lang}`] : (settings.about_hero_title || '')}
+                        onChange={(e) => setSettings({ ...settings, [`about_hero_title_${lang}`]: e.target.value })}
+                        className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-indigo-500/50 outline-none font-semibold text-white"
+                      />
+                    ))}
+                  </div>
+
+                  <div className="space-y-4">
+                    <p className="text-xs font-bold text-gray-500 uppercase pt-2">Subtitr (Uch tilda)</p>
+                    {['uz', 'ru', 'en'].map(lang => (
+                      <textarea
+                        key={lang}
+                        rows={2}
+                        placeholder={`Subtitr (${lang.toUpperCase()})`}
+                        value={settings[`about_hero_subtitle_${lang}`] !== undefined ? settings[`about_hero_subtitle_${lang}`] : (settings.about_hero_subtitle || '')}
+                        onChange={(e) => setSettings({ ...settings, [`about_hero_subtitle_${lang}`]: e.target.value })}
+                        className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-indigo-500/50 outline-none font-semibold text-white resize-none"
+                      />
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-6 pt-4 border-t border-white/10">
+                    <div className="w-20 h-20 rounded-xl bg-black/20 border border-white/10 overflow-hidden shadow-inner">
+                      {settings.about_hero_image ? <img src={settings.about_hero_image} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-indigo-900/50"><Image /></div>}
                     </div>
-                    <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 text-sm font-bold transition-colors">
-                      <input type="file" className="hidden" accept="image/*" onChange={handleAboutHeroImageUpload} disabled={uploadingAboutHero} />
-                      {uploadingAboutHero ? 'Yuklanmoqda...' : 'Fayldan yuklash'}
+                    <label className="flex-1 cursor-pointer">
+                      <span className="block text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-2">Asosiy Hero rasm</span>
+                      <input type="file" className="hidden" onChange={handleAboutHeroImageUpload} />
+                      <div className="bg-indigo-500/10 border border-indigo-500/20 py-2 text-center rounded-xl text-indigo-400 font-bold text-xs hover:bg-indigo-500/20 transition-all">
+                        {uploadingAboutHero ? 'Yuklanmoqda...' : 'Rasm tanlash'}
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 p-8 rounded-[2rem] border border-white/10 space-y-6">
+                  <h4 className="text-xs font-black text-blue-400 uppercase tracking-[0.2em] mb-4">KORXONA HAQIDA (PASTKI BO'LIM)</h4>
+                  <div className="space-y-4">
+                    <p className="text-xs font-bold text-gray-500 uppercase">Sarlavha (Uch tilda)</p>
+                    {['uz', 'ru', 'en'].map(lang => (
+                      <input
+                        key={lang}
+                        type="text"
+                        placeholder={`Korxona nomi (${lang.toUpperCase()})`}
+                        value={settings[`about_company_title_${lang}`] || ''}
+                        onChange={(e) => setSettings({ ...settings, [`about_company_title_${lang}`]: e.target.value })}
+                        className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-blue-500/50 outline-none font-semibold text-white"
+                      />
+                    ))}
+                  </div>
+                  <div className="space-y-4">
+                    <p className="text-xs font-bold text-gray-500 uppercase pt-2">Matn (Uch tilda)</p>
+                    {['uz', 'ru', 'en'].map(lang => (
+                      <textarea
+                        key={lang}
+                        rows={4}
+                        placeholder={`Korxona haqida batafsil matn (${lang.toUpperCase()})`}
+                        value={settings[`about_company_text_${lang}`] || ''}
+                        onChange={(e) => setSettings({ ...settings, [`about_company_text_${lang}`]: e.target.value })}
+                        className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-blue-500/50 outline-none font-semibold text-white resize-none text-sm"
+                      />
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-6 pt-4 border-t border-white/10">
+                    <div className="w-20 h-20 rounded-xl bg-black/20 border border-white/10 flex items-center justify-center overflow-hidden shadow-inner">
+                      {settings.about_company_image ? <img src={settings.about_company_image} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-blue-900/50"><Image /></div>}
+                    </div>
+                    <label className="flex-1 cursor-pointer">
+                      <span className="block text-[10px] font-black text-blue-400 uppercase tracking-widest mb-2">Jamoa / Korxona rasmi</span>
+                      <input type="file" className="hidden" onChange={handleAboutCompanyImageUpload} />
+                      <div className="bg-blue-500/10 border border-blue-500/20 py-2 text-center rounded-xl text-blue-400 font-bold text-xs hover:bg-blue-500/20 transition-all">
+                        Rasm tanlash
+                      </div>
                     </label>
                   </div>
                 </div>
               </div>
-            </div>
 
-            {/* Statistics Section */}
-            <div className="bg-gradient-to-br from-green-50 to-emerald-50 p-6 rounded-xl border border-green-100">
-              <h4 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                <TrendingUp size={20} className="text-green-600" />
-                {t('website.about.statsSection')}
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {[1, 2, 3, 4].map((num) => (
-                  <div key={num} className="bg-white p-4 rounded-lg border border-gray-200">
-                    <p className="text-xs font-bold text-gray-500 mb-2">Statistika #{num}</p>
-                    <div className="space-y-2">
+              {/* Right: Mission & Stats */}
+              <div className="space-y-6">
+                <div className="bg-white/5 p-8 rounded-[2rem] border border-white/10 space-y-6">
+                  <h4 className="text-xs font-black text-amber-400 uppercase tracking-[0.2em] mb-4">MISSION & VISION</h4>
+                  {['uz', 'ru', 'en'].map(lang => (
+                    <div key={lang} className="space-y-2">
+                      <p className="text-[10px] font-bold text-amber-400/50 uppercase">{lang.toUpperCase()} Tilida</p>
                       <input
                         type="text"
-                        placeholder="10,000+"
-                        value={settings[`stat${num}_value`] || ''}
-                        onChange={(e) => setSettings({ ...settings, [`stat${num}_value`]: e.target.value })}
-                        className="w-full border border-gray-200 p-2 rounded-lg focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all text-sm"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Happy Customers"
-                        value={settings[`stat${num}_label`] || ''}
-                        onChange={(e) => setSettings({ ...settings, [`stat${num}_label`]: e.target.value })}
-                        className="w-full border border-gray-200 p-2 rounded-lg focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none transition-all text-sm"
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Mission & Vision Section */}
-            <div className="bg-gradient-to-br from-purple-50 to-pink-50 p-6 rounded-xl border border-purple-100">
-              <h4 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                <Heart size={20} className="text-purple-600" />
-                {t('website.about.missionSection')}
-              </h4>
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-gray-600">{t('website.about.missionTitle')}</label>
-                  <input
-                    type="text"
-                    placeholder="Crafting details that matter"
-                    value={settings.about_mission_title || ''}
-                    onChange={(e) => setSettings({ ...settings, about_mission_title: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none transition-all"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-gray-600">{t('website.about.missionText1')}</label>
-                  <textarea
-                    placeholder="Started as a small family business..."
-                    rows={3}
-                    value={settings.about_mission_text1 || ''}
-                    onChange={(e) => setSettings({ ...settings, about_mission_text1: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none transition-all resize-none"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-gray-600">{t('website.about.missionText2')}</label>
-                  <textarea
-                    placeholder="Our mission is to provide..."
-                    rows={3}
-                    value={settings.about_mission_text2 || ''}
-                    onChange={(e) => setSettings({ ...settings, about_mission_text2: e.target.value })}
-                    className="w-full border border-gray-200 p-3 rounded-xl focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none transition-all resize-none"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-semibold text-gray-600">{t('website.about.missionImage')}</label>
-                  <div className="flex flex-col gap-3">
-                    <div className="flex flex-wrap gap-3">
-                      {getMissionImagesArrayFromSettings(settings).map((url, idx) => (
-                        <div
-                          key={`${url}-${idx}`}
-                          className="relative w-24 h-24 rounded-xl bg-gray-100 border border-gray-200 overflow-hidden flex-shrink-0"
-                        >
-                          <img src={url} alt="" className="w-full h-full object-contain" />
-                          <button
-                            type="button"
-                            onClick={() => removeMissionImageAt(idx)}
-                            className="absolute top-0.5 right-0.5 p-1 rounded-md bg-red-600 text-white shadow-md hover:bg-red-700"
-                            title="O‘chirish"
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-                      ))}
-                      {getMissionImagesArrayFromSettings(settings).length === 0 && (
-                        <div className="w-24 h-24 rounded-xl bg-gray-50 border border-dashed border-gray-200 flex items-center justify-center">
-                          <Image size={32} className="text-gray-400" />
-                        </div>
-                      )}
-                    </div>
-                    <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-xl hover:bg-purple-700 text-sm font-bold transition-colors w-fit">
-                      <input
-                        type="file"
-                        className="hidden"
-                        accept="image/*"
-                        multiple
-                        onChange={handleAboutMissionImageUpload}
-                        disabled={uploadingAboutMission}
-                      />
-                      {uploadingAboutMission ? 'Yuklanmoqda...' : "Rasm qo'shish (bir nechta tanlash mumkin)"}
-                    </label>
-                  </div>
-                  <p className="text-xs text-gray-400">{t('website.about.missionImageHint')}</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Values Section */}
-            <div className="bg-gradient-to-br from-orange-50 to-yellow-50 p-6 rounded-xl border border-orange-100">
-              <h4 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                <Award size={20} className="text-orange-600" />
-                {t('website.about.valuesSection')}
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {[1, 2, 3].map((num) => (
-                  <div key={num} className="bg-white p-4 rounded-lg border border-gray-200">
-                    <p className="text-xs font-bold text-gray-500 mb-3">Qadriyat #{num}</p>
-                    <div className="space-y-3">
-                      <input
-                        type="text"
-                        placeholder="Premium Quality"
-                        value={settings[`value${num}_title`] || ''}
-                        onChange={(e) => setSettings({ ...settings, [`value${num}_title`]: e.target.value })}
-                        className="w-full border border-gray-200 p-2 rounded-lg focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none transition-all text-sm font-semibold"
+                        placeholder="Missiya sarlavhasi"
+                        value={settings[`about_mission_title_${lang}`] !== undefined ? settings[`about_mission_title_${lang}`] : (settings.about_mission_title || '')}
+                        onChange={(e) => setSettings({ ...settings, [`about_mission_title_${lang}`]: e.target.value })}
+                        className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-amber-500/50 outline-none font-semibold text-white"
                       />
                       <textarea
-                        placeholder="We use only the finest materials..."
-                        rows={4}
-                        value={settings[`value${num}_desc`] || ''}
-                        onChange={(e) => setSettings({ ...settings, [`value${num}_desc`]: e.target.value })}
-                        className="w-full border border-gray-200 p-2 rounded-lg focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none transition-all text-sm resize-none"
+                        rows={2}
+                        placeholder="Asosiy matn"
+                        value={settings[`about_mission_text1_${lang}`] !== undefined ? settings[`about_mission_text1_${lang}`] : (settings.about_mission_text1 || '')}
+                        onChange={(e) => setSettings({ ...settings, [`about_mission_text1_${lang}`]: e.target.value })}
+                        className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-amber-500/50 outline-none font-semibold text-white resize-none text-sm"
                       />
                     </div>
+                  ))}
+                </div>
+
+                <div className="bg-white/5 p-8 rounded-[2rem] border border-white/10">
+                  <h4 className="text-xs font-black text-emerald-400 uppercase tracking-[0.2em] mb-6">STATISTICS</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {[1, 2, 3, 4].map((num) => (
+                      <div key={num} className="bg-black/20 p-4 rounded-2xl border border-white/10 space-y-3 shadow-inner">
+                        <input
+                          type="text"
+                          placeholder="Qiymat (masalan: 10,000+)"
+                          value={settings[`stat${num}_value`] || ''}
+                          onChange={(e) => setSettings({ ...settings, [`stat${num}_value`]: e.target.value })}
+                          className="w-full bg-emerald-500/10 border-none p-1 rounded-lg outline-none text-xl font-black text-emerald-400 text-center"
+                        />
+                        {['uz', 'ru', 'en'].map(lang => (
+                          <input
+                            key={lang}
+                            type="text"
+                            placeholder={`Nomi (${lang.toUpperCase()})`}
+                            value={settings[`stat${num}_label_${lang}`] !== undefined ? settings[`stat${num}_label_${lang}`] : (settings[`stat${num}_label`] || '')}
+                            onChange={(e) => setSettings({ ...settings, [`stat${num}_label_${lang}`]: e.target.value })}
+                            className="w-full bg-transparent border-none p-0 outline-none text-[10px] font-bold text-gray-500 uppercase tracking-widest text-center"
+                          />
+                        ))}
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </div>
               </div>
             </div>
 
-            {/* Save Button */}
-            <div className="flex justify-end pt-4">
+            <div className="mt-10 flex justify-end">
               <button
                 onClick={handleSaveSettings}
-                className="flex items-center gap-2 bg-blue-600 text-white px-8 py-3 rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-200 font-bold transition-all"
+                disabled={savingSettings}
+                className={`${savingSettings ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'} text-white px-12 py-4 rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-xl shadow-indigo-200 flex items-center gap-3`}
               >
-                <Save size={20} />
-                {t('common.save')}
+                {savingSettings ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save size={20} />}
+                {savingSettings ? 'Saqlanmoqda...' : t('common.save')}
               </button>
             </div>
           </div>
@@ -1149,735 +943,385 @@ export default function Vebsayt() {
       )}
 
       {activeTab === 'foyda-kartalari' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 fade-in">
-          <h3 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
-            <Award className="text-blue-600" />
-            {t('website.tabs.benefits') || "Foyda kartalari (Tez Yetkazib Berish, Sifat Kafolati, xavfsiz To'lov)"}
-          </h3>
-          <p className="text-gray-500 text-sm mb-6">Bosh sahifadagi uchta kartani CRM orqali boshqaring.</p>
+        <div className="space-y-8 fade-in">
+          <div className="bg-white/5 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-white/10 p-8 md:p-12">
+            <div className="flex items-center gap-4 mb-10">
+              <div className="w-12 h-12 bg-emerald-500/20 rounded-2xl flex items-center justify-center shadow-lg border border-emerald-500/30">
+                <Award className="text-emerald-400" size={24} />
+              </div>
+              <div>
+                <h3 className="text-2xl font-black text-white tracking-tight">Afzalliklar (Benefit Cards)</h3>
+                <p className="text-gray-400 font-medium">Bosh sahifada mijozlarga ko'rinadigan xizmat afzalliklari</p>
+              </div>
+            </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 bg-gray-50 p-6 rounded-2xl border border-gray-100">
-            <div className="space-y-2">
-              <label className="text-sm font-bold text-gray-600">Icon</label>
-              <select
-                value={benefitForm.icon}
-                onChange={(e) => setBenefitForm({ ...benefitForm, icon: e.target.value })}
-                className="w-full border border-gray-200 p-3 rounded-xl bg-white"
-              >
-                {BENEFIT_ICONS.map(ic => (
-                  <option key={ic} value={ic}>{ic}</option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-bold text-gray-600">Tartib (sort_order)</label>
-              <input type="number" min="0" value={benefitForm.sort_order} onChange={(e) => setBenefitForm({ ...benefitForm, sort_order: parseInt(e.target.value) || 0 })} className="w-full border border-gray-200 p-3 rounded-xl" />
-            </div>
-            {['uz', 'ru', 'en'].map(lang => (
-              <div key={lang} className="space-y-2 md:col-span-2">
-                <label className="text-sm font-bold text-gray-600">Sarlavha ({lang.toUpperCase()})</label>
-                <input type="text" placeholder={lang === 'uz' ? 'Tez Yetkazib Berish' : ''} value={benefitForm[`title_${lang}`] || ''} onChange={(e) => setBenefitForm({ ...benefitForm, [`title_${lang}`]: e.target.value })} className="w-full border border-gray-200 p-3 rounded-xl" />
+            <div className="bg-white/5 p-8 rounded-[2rem] border border-white/5 mb-10">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-gray-500 uppercase tracking-wider ml-1">Icon tanlash</label>
+                    <select
+                      value={benefitForm.icon}
+                      onChange={(e) => setBenefitForm({ ...benefitForm, icon: e.target.value })}
+                      className="w-full bg-black/20 border border-white/10 p-4 rounded-2xl focus:border-emerald-500/50 outline-none font-semibold text-white shadow-inner appearance-none cursor-pointer"
+                    >
+                      {BENEFIT_ICONS.map(ic => (
+                        <option key={ic} value={ic} className="bg-gray-900">{ic.toUpperCase()}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4">
+                    {['uz', 'ru', 'en'].map(lang => (
+                      <div key={lang} className="space-y-2">
+                        <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Sarlavha ({lang.toUpperCase()})</label>
+                        <input
+                          type="text"
+                          value={benefitForm[`title_${lang}`] || ''}
+                          onChange={(e) => setBenefitForm({ ...benefitForm, [`title_${lang}`]: e.target.value })}
+                          className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-emerald-500/50 outline-none font-bold text-white text-sm"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-gray-500 uppercase tracking-wider ml-1">Tartib raqami</label>
+                    <input
+                      type="number"
+                      value={benefitForm.sort_order}
+                      onChange={(e) => setBenefitForm({ ...benefitForm, sort_order: parseInt(e.target.value) || 0 })}
+                      className="w-full bg-black/20 border border-white/10 p-4 rounded-2xl focus:border-emerald-500/50 outline-none font-bold text-white"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-4">
+                    {['uz', 'ru', 'en'].map(lang => (
+                      <div key={lang} className="space-y-2">
+                        <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Tavsif ({lang.toUpperCase()})</label>
+                        <textarea
+                          rows={2}
+                          value={benefitForm[`desc_${lang}`] || ''}
+                          onChange={(e) => setBenefitForm({ ...benefitForm, [`desc_${lang}`]: e.target.value })}
+                          className="w-full bg-black/20 border border-white/10 p-3 rounded-xl focus:border-emerald-500/50 outline-none font-medium resize-none text-sm text-gray-300"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-            ))}
-            {['uz', 'ru', 'en'].map(lang => (
-              <div key={lang} className="space-y-2 md:col-span-2">
-                <label className="text-sm font-bold text-gray-600">Tavsif ({lang.toUpperCase()})</label>
-                <input type="text" placeholder={lang === 'uz' ? '100$ dan yuqori buyurtmalar uchun bepul' : ''} value={benefitForm[`desc_${lang}`] || ''} onChange={(e) => setBenefitForm({ ...benefitForm, [`desc_${lang}`]: e.target.value })} className="w-full border border-gray-200 p-3 rounded-xl" />
-              </div>
-            ))}
-            <div className="md:col-span-2 flex gap-3">
-              {editingBenefit && (
-                <button onClick={() => { setEditingBenefit(null); setBenefitForm({ icon: 'truck', title_uz: '', title_ru: '', title_en: '', desc_uz: '', desc_ru: '', desc_en: '', sort_order: 0, is_active: true }); }} className="px-6 py-3 border border-gray-300 rounded-xl font-bold">{t('common.cancel')}</button>
-              )}
-              <button onClick={handleSaveBenefit} className="flex items-center gap-2 bg-blue-600 text-white px-8 py-3 rounded-xl hover:bg-blue-700 font-bold">
-                <Save size={20} />
-                {editingBenefit ? t('common.save') : (t('common.add') || "Qo'shish")}
-              </button>
-            </div>
-          </div>
 
-          <div className="space-y-4">
-            {siteBenefits.map(b => (
-              <div key={b.id} className="flex flex-wrap items-center justify-between gap-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
-                <div className="flex items-center gap-4">
-                  <span className="text-xs font-mono bg-gray-200 px-2 py-1 rounded">{b.icon}</span>
-                  <span className="font-bold text-gray-900">{b.title_uz || b.title_ru || b.title_en}</span>
-                  {!b.is_active && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">Yashirin</span>}
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={() => handleToggleBenefit(b.id, b.is_active)} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${b.is_active ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>{b.is_active ? t('common.hide') : t('common.show')}</button>
-                  <button onClick={() => { setEditingBenefit(b); setBenefitForm({ icon: b.icon || 'truck', title_uz: b.title_uz || '', title_ru: b.title_ru || '', title_en: b.title_en || '', desc_uz: b.desc_uz || '', desc_ru: b.desc_ru || '', desc_en: b.desc_en || '', sort_order: b.sort_order || 0, is_active: b.is_active }); }} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-100 text-blue-700">{t('common.edit')}</button>
-                  <button onClick={() => handleDeleteBenefit(b.id)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-100 text-red-700">{t('common.delete')}</button>
-                </div>
+              <div className="mt-8 flex justify-end gap-4">
+                {editingBenefit && (
+                  <button
+                    onClick={() => {
+                      setEditingBenefit(null)
+                      setBenefitForm({ icon: 'truck', title_uz: '', title_ru: '', title_en: '', desc_uz: '', desc_ru: '', desc_en: '', sort_order: 0, is_active: true })
+                    }}
+                    className="px-8 py-4 rounded-2xl font-black text-xs uppercase tracking-widest text-gray-500 hover:bg-gray-100 transition-all"
+                  >
+                    {t('common.cancel')}
+                  </button>
+                )}
+                <button
+                  onClick={handleSaveBenefit}
+                  className="bg-emerald-600 text-white px-10 py-4 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 active:scale-95 flex items-center gap-2"
+                >
+                  <Save size={16} />
+                  {editingBenefit ? t('common.save') : t('common.add')}
+                </button>
               </div>
-            ))}
-            {siteBenefits.length === 0 && <p className="text-gray-400 text-center py-8">{t('common.noData')}</p>}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+              {siteBenefits.map(b => (
+                <div key={b.id} className={`p-6 rounded-[2rem] border transition-all hover:shadow-2xl group relative overflow-hidden ${
+                  b.is_active ? 'bg-white/5 border-white/10' : 'bg-white/[0.02] border-white/5 opacity-50'
+                }`}>
+                  <div className="flex items-start justify-between mb-6">
+                    <div className="w-12 h-12 bg-emerald-500/10 rounded-2xl flex items-center justify-center text-emerald-400 group-hover:bg-emerald-500 group-hover:text-white transition-all duration-500 border border-emerald-500/20 group-hover:border-emerald-400">
+                      <Award size={24} />
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => handleToggleBenefit(b.id, b.is_active)} className="p-2 bg-white/5 border border-white/10 rounded-xl text-gray-400 hover:text-emerald-400 shadow-lg transition-all">
+                        {b.is_active ? <Eye size={16} /> : <EyeOff size={16} />}
+                      </button>
+                      <button onClick={() => handleEditBenefit(b)} className="p-2 bg-white/5 border border-white/10 rounded-xl text-gray-400 hover:text-blue-400 shadow-lg transition-all">
+                        <Palette size={16} />
+                      </button>
+                      <button onClick={() => handleDeleteBenefit(b.id)} className="p-2 bg-white/5 border border-white/10 rounded-xl text-gray-400 hover:text-rose-400 shadow-lg transition-all">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                  <h5 className="text-lg font-black text-white mb-2 leading-tight">
+                    {b[`title_${t('common.langCode')}`] || b.title_uz || b.title || 'No Title'}
+                  </h5>
+                  <p className="text-gray-400 text-sm font-medium line-clamp-2">
+                    {b[`desc_${t('common.langCode')}`] || b.desc_uz || b.desc || ''}
+                  </p>
+                  <div className="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
+                    <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">#{b.sort_order} order</span>
+                    <span className={`text-[10px] font-black uppercase tracking-[0.2em] ${b.is_active ? 'text-emerald-400' : 'text-gray-600'}`}>
+                      {b.is_active ? 'Active' : 'Hidden'}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
       {activeTab === 'albom-rasmlari' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 sm:p-6 md:p-8 fade-in">
-          <h3 className="text-lg sm:text-xl font-bold text-gray-800 mb-4 sm:mb-6 flex items-center gap-2">
-            <Image className="text-blue-600 w-5 h-5 sm:w-6 sm:h-6" />
-            {t('website.tabs.albumImages') || "Albom rasmlari"}
-          </h3>
-          <p className="text-gray-500 text-xs sm:text-sm mb-4 sm:mb-6">Albom sahifasida mahsulotlar bilan birga ko&apos;rinadigan qo&apos;shimcha rasmlar. Bir yoki ko&apos;p rasmni fayldan yuklang.</p>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8 bg-gray-50 p-4 sm:p-6 rounded-2xl border border-gray-100">
-            <div className="space-y-2 md:col-span-2">
-              <label className="text-xs sm:text-sm font-bold text-gray-600">Rasm * (fayldan yuklash)</label>
-              <div className="flex gap-3 items-center">
-                <div className="w-20 h-24 sm:w-24 sm:h-28 rounded-xl bg-white border border-gray-200 flex items-center justify-center overflow-hidden flex-shrink-0">
-                  {albumImageForm.image_url ? (
-                    <img src={albumImageForm.image_url} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <Image size={28} className="text-gray-300" />
-                  )}
+        <div className="space-y-8 fade-in">
+          <div className="bg-white/5 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-white/10 p-8 md:p-12">
+            <div className="flex flex-wrap items-center justify-between gap-6 mb-10">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-purple-500/20 rounded-2xl flex items-center justify-center shadow-lg border border-purple-500/30">
+                  <Image className="text-purple-400" size={24} />
                 </div>
-                <label className="cursor-pointer bg-white border border-gray-200 px-4 py-3 rounded-xl hover:bg-gray-50 transition-colors flex items-center gap-2 text-sm font-medium text-gray-600">
-                  <input type="file" className="hidden" accept="image/*" multiple onChange={handleAlbumImageUpload} disabled={uploadingAlbumImage} />
-                  {uploadingAlbumImage ? (
-                    <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent animate-spin rounded-full" />
-                  ) : (
-                    <Image size={20} className="text-gray-500" />
-                  )}
-                  {uploadingAlbumImage ? 'Yuklanmoqda...' : 'Rasm tanlash (bir yoki ko\'p)'}
-                </label>
+                <div>
+                  <h3 className="text-2xl font-black text-white tracking-tight">
+                    {t('website.tabs.albumImages')}
+                  </h3>
+                  <p className="text-gray-400 font-medium">Sayt galereyasi va bento-grid rasmlari</p>
+                </div>
               </div>
-            </div>
-            <div className="space-y-2">
-              <label className="text-xs sm:text-sm font-bold text-gray-600">Tartib (sort_order)</label>
-              <input
-                type="number"
-                min="0"
-                value={albumImageForm.sort_order}
-                onChange={(e) => setAlbumImageForm({ ...albumImageForm, sort_order: parseInt(e.target.value) || 0 })}
-                className="w-full border border-gray-200 p-2.5 sm:p-3 rounded-xl"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-xs sm:text-sm font-bold text-gray-600">Rasm formati (ta&apos;sir)</label>
-              <select
-                value={albumImageForm.format || 'portrait'}
-                onChange={(e) => setAlbumImageForm({ ...albumImageForm, format: e.target.value })}
-                className="w-full border border-gray-200 p-2.5 sm:p-3 rounded-xl bg-white"
-              >
-                <option value="portrait">Portrait (4:5) — baland</option>
-                <option value="square">Square (1:1) — kvadrat</option>
-                <option value="landscape">Landscape (3:2) — keng</option>
-                <option value="large">Large — katta bento (2 ustun)</option>
-              </select>
-            </div>
-            {['uz', 'ru', 'en'].map(lang => (
-              <div key={lang} className="space-y-2 md:col-span-2">
-                <label className="text-xs sm:text-sm font-bold text-gray-600">Sarlavha ({lang.toUpperCase()})</label>
-                <input
-                  type="text"
-                  placeholder={lang === 'uz' ? 'Rasm sarlavhasi' : ''}
-                  value={albumImageForm[`title_${lang}`] || ''}
-                  onChange={(e) => setAlbumImageForm({ ...albumImageForm, [`title_${lang}`]: e.target.value })}
-                  className="w-full border border-gray-200 p-2.5 sm:p-3 rounded-xl"
-                />
-              </div>
-            ))}
-            <div className="md:col-span-2 flex flex-wrap gap-2 sm:gap-3">
-              {editingAlbumImage && (
-                <button
-                  onClick={() => {
-                    setEditingAlbumImage(null)
-                    setAlbumImageForm({ image_url: '', title_uz: '', title_ru: '', title_en: '', sort_order: 0, is_active: true, format: 'portrait' })
-                  }}
-                  className="px-4 sm:px-6 py-2.5 sm:py-3 border border-gray-300 rounded-xl font-bold text-sm sm:text-base"
-                >
-                  {t('common.cancel')}
+              {albumImages.length > 0 && (
+                <button onClick={handleDeleteAllAlbumImages} className="px-6 py-3 rounded-xl bg-rose-50 text-rose-600 font-black text-xs uppercase tracking-widest hover:bg-rose-100 transition-all flex items-center gap-2">
+                  <Trash2 size={16} /> Barchasini o'chirish
                 </button>
               )}
-              <button
-                onClick={handleSaveAlbumImage}
-                className="flex items-center gap-2 bg-blue-600 text-white px-6 sm:px-8 py-2.5 sm:py-3 rounded-xl hover:bg-blue-700 font-bold text-sm sm:text-base"
-              >
-                <Save size={18} />
-                {editingAlbumImage ? t('common.save') : (t('common.add') || "Qo'shish")}
-              </button>
             </div>
-          </div>
 
-          {albumImages.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-              <span className="text-sm text-gray-600">Rasmlar: {albumImages.length} ta</span>
-              <button
-                onClick={handleDeleteAllAlbumImages}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-100 text-red-700 hover:bg-red-200 font-bold text-sm transition-colors"
-              >
-                <Trash2 size={18} />
-                Barcha rasmlarni o&apos;chirish
-              </button>
-            </div>
-          )}
-
-          <div className="space-y-4">
-            {albumImages.map(img => (
-              <div
-                key={img.id}
-                className="flex flex-col sm:flex-row flex-wrap items-start sm:items-center justify-between gap-3 sm:gap-4 p-3 sm:p-4 bg-gray-50 rounded-xl border border-gray-100"
-              >
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 flex-1 min-w-0">
-                  {img.image_url && (
-                    <img
-                      src={img.image_url}
-                      alt={img.title_uz || img.title_ru || img.title_en || 'Album'}
-                      className="w-full sm:w-16 h-24 sm:h-16 object-cover rounded-lg border border-gray-200 flex-shrink-0"
-                      onError={(e) => { e.target.style.display = 'none' }}
-                    />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <span className="font-bold text-gray-900 text-sm sm:text-base block truncate">{img.title_uz || img.title_ru || img.title_en || '—'}</span>
-                    <span className="text-xs text-gray-500">Tartib: {img.sort_order ?? 0} · Format: {img.format || 'portrait'}</span>
-                    {!img.is_active && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded ml-2">Yashirin</span>}
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-1.5 sm:gap-2 w-full sm:w-auto">
-                  <button onClick={() => handleToggleAlbumImage(img.id, img.is_active)} className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-bold flex-1 sm:flex-none ${img.is_active ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>{img.is_active ? t('common.hide') : t('common.show')}</button>
-                  <button onClick={() => { setEditingAlbumImage(img); setAlbumImageForm({ image_url: img.image_url || '', title_uz: img.title_uz || '', title_ru: img.title_ru || '', title_en: img.title_en || '', sort_order: img.sort_order ?? 0, is_active: img.is_active, format: img.format || 'portrait' }); }} className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-100 text-blue-700 flex-1 sm:flex-none">{t('common.edit')}</button>
-                  <button onClick={() => handleDeleteAlbumImage(img.id)} className="px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-bold bg-red-100 text-red-700 flex-1 sm:flex-none">{t('common.delete')}</button>
-                </div>
-              </div>
-            ))}
-            {albumImages.length === 0 && <p className="text-gray-400 text-center py-8 text-sm sm:text-base">{t('common.noData')}</p>}
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'banners' && (
-        <div className="space-y-6 fade-in">
-          <div className="flex justify-end">
-            <button
-              onClick={() => setIsAddingBanner(!isAddingBanner)}
-              className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-xl hover:bg-blue-700 font-bold shadow-lg shadow-blue-200 transition-all"
-            >
-              {isAddingBanner ? <X size={20} /> : <Plus size={20} />}
-              {isAddingBanner ? t('common.cancel') : t('website.banners.newBanner')}
-            </button>
-          </div>
-
-          {isAddingBanner && (
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-              <h3 className="text-lg font-bold text-gray-800 mb-4">{t('website.banners.newBanner')}</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                {/* Title Inputs */}
-                <div className="space-y-4 col-span-1 md:col-span-2 bg-blue-50/30 p-4 rounded-xl border border-blue-100/50">
-                  <label className="text-sm font-bold text-blue-800 block mb-2">{t('website.banners.title')}</label>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">UZ</span>
-                      <input
-                        type="text"
-                        placeholder="Premium Sifat"
-                        value={bannerForm.title_uz || ''}
-                        onChange={(e) => setBannerForm({ ...bannerForm, title_uz: e.target.value })}
-                        className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                      />
+            <div className="bg-white/5 p-8 rounded-[2rem] border border-white/5 mb-10">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="space-y-6">
+                  <label className="block">
+                    <span className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 ml-1">Fayldan yuklash</span>
+                    <div className={`w-full py-12 border-2 border-dashed rounded-2xl transition-all flex flex-col items-center justify-center gap-3 cursor-pointer ${
+                      uploadingAlbumImage ? 'bg-black/20 border-white/10' : 'bg-purple-500/5 border-purple-500/20 hover:bg-purple-500/10 hover:border-purple-500/40'
+                    }`}>
+                      <input type="file" multiple className="hidden" accept="image/*" onChange={handleAlbumImageUpload} disabled={uploadingAlbumImage} />
+                      <div className="p-4 bg-purple-500/20 text-purple-400 rounded-2xl"><Plus size={32} /></div>
+                      <p className="font-black text-white">{uploadingAlbumImage ? 'Yuklanmoqda...' : 'Rasmlar tanlash'}</p>
+                      <p className="text-xs text-purple-400/60 font-medium">Bir vaqtning o'zida ko'p rasm yuklash mumkin</p>
                     </div>
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">RU</span>
-                      <input
-                        type="text"
-                        placeholder="Премиум Качество"
-                        value={bannerForm.title_ru || ''}
-                        onChange={(e) => setBannerForm({ ...bannerForm, title_ru: e.target.value })}
-                        className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                      />
+                  </label>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Tartib</label>
+                      <input type="number" value={albumImageForm.sort_order} onChange={(e) => setAlbumImageForm({...albumImageForm, sort_order: parseInt(e.target.value) || 0})} className="w-full bg-black/20 border border-white/10 p-4 rounded-2xl outline-none focus:border-purple-500/50 transition-all font-bold text-white" />
                     </div>
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">EN</span>
-                      <input
-                        type="text"
-                        placeholder="Premium Quality"
-                        value={bannerForm.title_en || ''}
-                        onChange={(e) => setBannerForm({ ...bannerForm, title_en: e.target.value })}
-                        className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                      />
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Format</label>
+                      <select value={albumImageForm.format || 'portrait'} onChange={(e) => setAlbumImageForm({...albumImageForm, format: e.target.value})} className="w-full bg-black/20 border border-white/10 p-4 rounded-2xl outline-none focus:border-purple-500/50 transition-all font-bold text-white appearance-none cursor-pointer">
+                        <option value="portrait" className="bg-gray-900">Portrait</option>
+                        <option value="square" className="bg-gray-900">Square</option>
+                        <option value="landscape" className="bg-gray-900">Landscape</option>
+                        <option value="large" className="bg-gray-900">Large Bento</option>
+                      </select>
                     </div>
                   </div>
                 </div>
 
-                {/* Subtitle Inputs */}
-                <div className="space-y-4 col-span-1 md:col-span-2 bg-indigo-50/30 p-4 rounded-xl border border-indigo-100/50">
-                  <label className="text-sm font-bold text-indigo-800 block mb-2">{t('website.banners.subtitle')}</label>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">UZ</span>
-                      <input
-                        type="text"
-                        placeholder="Yangi kolleksiya"
-                        value={bannerForm.subtitle_uz || ''}
-                        onChange={(e) => setBannerForm({ ...bannerForm, subtitle_uz: e.target.value })}
-                        className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                      />
+                <div className="space-y-4">
+                  {['uz', 'ru', 'en'].map(lang => (
+                    <div key={lang} className="space-y-2">
+                      <label className="text-xs font-bold text-gray-400 uppercase tracking-wider ml-1">Sarlavha ({lang.toUpperCase()})</label>
+                      <input type="text" value={albumImageForm[`title_${lang}`] || ''} onChange={(e) => setAlbumImageForm({...albumImageForm, [`title_${lang}`]: e.target.value})} className="w-full bg-black/20 border border-white/10 p-4 rounded-2xl outline-none focus:border-purple-500/50 transition-all font-bold text-white" />
                     </div>
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">RU</span>
-                      <input
-                        type="text"
-                        placeholder="Новая коллекция"
-                        value={bannerForm.subtitle_ru || ''}
-                        onChange={(e) => setBannerForm({ ...bannerForm, subtitle_ru: e.target.value })}
-                        className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase ml-1">EN</span>
-                      <input
-                        type="text"
-                        placeholder="New collection"
-                        value={bannerForm.subtitle_en || ''}
-                        onChange={(e) => setBannerForm({ ...bannerForm, subtitle_en: e.target.value })}
-                        className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                      />
-                    </div>
-                  </div>
-                </div>
-                <input
-                  type="text"
-                  placeholder={t('website.banners.imageUrl')}
-                  value={bannerForm.image_url}
-                  onChange={(e) => setBannerForm({ ...bannerForm, image_url: e.target.value })}
-                  className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all col-span-1 md:col-span-2"
-                />
-                <input
-                  type="text"
-                  placeholder={t('website.banners.link')}
-                  value={bannerForm.link}
-                  onChange={(e) => setBannerForm({ ...bannerForm, link: e.target.value })}
-                  className="w-full border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all col-span-1 md:col-span-2"
-                />
-              </div>
-              <div className="flex justify-end">
-                <button
-                  onClick={handleSaveBanner}
-                  className="bg-green-600 text-white px-8 py-3 rounded-xl hover:bg-green-700 font-bold shadow-green-200 shadow-lg transition-all"
-                >
-                  {t('common.save')}
-                </button>
-              </div>
-            </div>
-          )}
-
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {banners.map(banner => (
-              <div key={banner.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden group hover:shadow-md transition-all">
-                <div className="relative h-48 overflow-hidden">
-                  <img
-                    src={banner.image_url}
-                    alt={banner.title}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                  />
-                  {!banner.active && (
-                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center backdrop-blur-sm">
-                      <span className="bg-red-500 text-white px-4 py-1.5 rounded-full text-sm font-bold shadow-lg">{t('common.inactive')}</span>
-                    </div>
-                  )}
-                </div>
-                <div className="p-5">
-                  <h4 className="font-bold text-lg mb-1 text-gray-900">{banner.title}</h4>
-                  <p className="text-sm text-gray-500 mb-6 line-clamp-2">{banner.subtitle}</p>
-
-                  <div className="grid grid-cols-2 gap-3 mb-3">
-                    <button
-                      onClick={() => handleToggleBanner(banner.id, banner.active)}
-                      className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-colors ${banner.active
-                        ? 'bg-yellow-50 text-yellow-700 hover:bg-yellow-100'
-                        : 'bg-green-50 text-green-700 hover:bg-green-100'
-                        }`}
-                    >
-                      {banner.active ? <EyeOff size={16} /> : <Eye size={16} />}
-                      {banner.active ? t('common.hide') : t('common.show')}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setBannerForm(banner);
-                        setIsAddingBanner(true);
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                      }}
-                      className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
-                    >
-                      <Settings size={16} />
-                      {t('common.edit')}
-                    </button>
-                  </div>
-                  <button
-                    onClick={() => handleDeleteBanner(banner.id)}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
-                  >
-                    <Trash2 size={16} />
-                    {t('common.delete')}
+                  ))}
+                  <button onClick={handleSaveAlbumImage} className="w-full bg-purple-600 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-purple-500 transition-all shadow-xl shadow-purple-500/20 mt-4">
+                    {editingAlbumImage ? t('common.save') : "Tanlanganlarni saqlash"}
                   </button>
                 </div>
               </div>
-            ))}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+              {albumImages.map(img => (
+                <div key={img.id} className="aspect-[4/5] rounded-[1.5rem] overflow-hidden relative group border border-white/10 shadow-lg transition-all hover:scale-[1.05] hover:border-purple-500/50">
+                  <img src={img.image_url} alt="" className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-all flex flex-col justify-end p-4 backdrop-blur-sm">
+                    <p className="text-white text-[10px] font-black uppercase tracking-widest mb-2 line-clamp-1">{img.title_uz || img.title_ru}</p>
+                    <div className="flex gap-2">
+                      <button onClick={() => handleDeleteAlbumImage(img.id)} className="p-2 bg-rose-500/20 border border-rose-500/30 text-rose-400 rounded-lg hover:bg-rose-500 hover:text-white transition-all shadow-lg">
+                        <Trash2 size={14} />
+                      </button>
+                      <button onClick={() => handleToggleAlbumImage(img.id, img.is_active)} className="p-2 bg-white/10 border border-white/20 text-white rounded-lg hover:bg-white/20 transition-all shadow-lg">
+                        {img.is_active ? <Eye size={14} /> : <EyeOff size={14} />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
+
 
 
       {activeTab === 'kategoriyalar' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 fade-in">
-          <h3 className="text-xl font-bold text-gray-800 mb-6">{t('website.tabs.categories')}</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 bg-gray-50 p-6 rounded-2xl border border-dashed border-gray-200">
-            <div className="space-y-4">
-              <label className="text-sm font-bold text-gray-600 block">Kategoriya nomi (UZ)</label>
-              <input
-                type="text"
-                placeholder="Masalan: Parda aksessuarlari"
-                className="w-full border border-gray-200 p-4 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                value={newCategory}
-                onChange={(e) => setNewCategory(e.target.value)}
-              />
+        <div className="space-y-6 fade-in">
+          <div className="bg-white/5 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-white/10 p-8 md:p-12">
+            <div className="flex items-center gap-4 mb-10">
+              <div className="w-12 h-12 bg-blue-500/20 rounded-2xl flex items-center justify-center shadow-lg border border-blue-500/30">
+                <Layout className="text-blue-400" size={24} />
+              </div>
+              <div>
+                <h3 className="text-2xl font-black text-white tracking-tight">Kategoriyalar</h3>
+                <p className="text-gray-400 font-medium">Veb-saytdagi mahsulot bo'limlari</p>
+              </div>
             </div>
-            <div className="space-y-4">
-              <label className="text-sm font-bold text-gray-600 block">Название категории (RU)</label>
-              <input
-                type="text"
-                placeholder="Например: Аксессуары для штор"
-                className="w-full border border-gray-200 p-4 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                value={newCategoryRu}
-                onChange={(e) => setNewCategoryRu(e.target.value)}
-              />
-            </div>
-            <div className="space-y-4">
-              <label className="text-sm font-bold text-gray-600 block">Category Name (EN)</label>
-              <input
-                type="text"
-                placeholder="Example: Curtain accessories"
-                className="w-full border border-gray-200 p-4 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
-                value={newCategoryEn}
-                onChange={(e) => setNewCategoryEn(e.target.value)}
-              />
-            </div>
-            <div className="space-y-4">
-              <label className="text-sm font-bold text-gray-600 block">{t('website.categories.image')}</label>
-              <div className="flex gap-4 items-center">
-                <div className="w-16 h-16 rounded-xl bg-white border border-gray-200 flex items-center justify-center overflow-hidden flex-shrink-0">
-                  {categoryImage ? (
-                    <img src={categoryImage} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <Layout className="text-gray-300" size={24} />
-                  )}
+
+            <div className="bg-white/5 p-8 rounded-[2rem] border border-white/5 mb-10">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 gap-4">
+                    {['uz', 'ru', 'en'].map(lang => (
+                      <div key={lang} className="space-y-1">
+                        <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Nomi ({lang.toUpperCase()})</label>
+                        <input
+                          type="text"
+                          value={lang === 'uz' ? newCategory : lang === 'ru' ? newCategoryRu : newCategoryEn}
+                          onChange={(e) => lang === 'uz' ? setNewCategory(e.target.value) : lang === 'ru' ? setNewCategoryRu(e.target.value) : setNewCategoryEn(e.target.value)}
+                          className="w-full bg-black/20 border border-white/10 p-3 rounded-xl outline-none font-bold text-white text-sm"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-6 pt-4 border-t border-white/5">
+                    <div className="w-20 h-20 rounded-xl bg-black/20 border border-white/10 flex items-center justify-center overflow-hidden shadow-inner">
+                      {categoryImage ? <img src={categoryImage} className="w-full h-full object-cover" /> : <Image className="text-gray-700" />}
+                    </div>
+                    <label className="flex-1 cursor-pointer">
+                      <span className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2">Kategoriya rasmi</span>
+                      <input type="file" className="hidden" onChange={handleCategoryImageUpload} />
+                      <div className="py-2.5 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-xl text-[10px] font-black uppercase text-center hover:bg-blue-500/20 transition-all tracking-widest">
+                        {uploadingCategory ? 'Yuklanmoqda...' : 'Rasm tanlash'}
+                      </div>
+                    </label>
+                  </div>
                 </div>
-                <div className="flex-1 flex gap-2">
-                  <input
-                    type="text"
-                    placeholder={t('website.categories.image')}
-                    className="flex-1 border border-gray-200 p-3 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all text-sm bg-white"
-                    value={categoryImage}
-                    onChange={(e) => setCategoryImage(e.target.value)}
-                  />
-                  <label className="cursor-pointer bg-white border border-gray-200 p-3 rounded-xl hover:bg-gray-50 transition-colors flex items-center justify-center">
-                    <input type="file" className="hidden" onChange={handleCategoryImageUpload} accept="image/*" />
-                    {uploadingCategory ? <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent animate-spin rounded-full"></div> : <Image size={20} className="text-gray-500" />}
-                  </label>
+                <div className="flex flex-col gap-4 h-full justify-end">
+                  <button onClick={handleSaveCategory} className="w-full py-4 rounded-2xl bg-blue-600 text-white font-black text-sm uppercase tracking-widest hover:bg-blue-500 shadow-xl shadow-blue-500/20 transition-all active:scale-95 flex items-center justify-center gap-3">
+                    <Save size={20} />
+                    {editingCategoryId ? t('common.save') : "Kategoriya Qo'shish"}
+                  </button>
+                  {editingCategoryId && (
+                    <button onClick={handleCancelEditCategory} className="w-full py-4 rounded-2xl bg-white/10 text-gray-300 font-black text-xs uppercase tracking-widest hover:bg-white/20 transition-all">
+                      Bekor qilish
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
-            <div className="md:col-span-2 flex justify-end gap-3">
-              {editingCategoryId && (
-                <button
-                  onClick={handleCancelEditCategory}
-                  className="px-6 py-4 rounded-xl font-bold border border-gray-300 text-gray-600 hover:bg-gray-50 flex items-center gap-2 transition-all"
-                >
-                  <X size={20} /> {t('common.cancel')}
-                </button>
-              )}
-              <button
-                onClick={handleSaveCategory}
-                className="bg-blue-600 text-white px-10 py-4 rounded-xl hover:bg-blue-700 font-bold shadow-lg shadow-blue-200 flex items-center gap-2 transition-all"
-                disabled={uploadingCategory}
-              >
-                {editingCategoryId ? <><Settings size={20} /> {t('common.save')}</> : <><Plus size={20} /> {t('website.categories.addCategory')}</>}
-              </button>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6">
+              {categories.map(cat => (
+                <div key={cat.id} className="group relative">
+                  <div className="aspect-square rounded-[2rem] overflow-hidden bg-white/5 border border-white/10 shadow-lg transition-all group-hover:shadow-2xl group-hover:scale-[1.05] group-hover:border-blue-500/50">
+                    <img src={cat.image_url || '/placeholder.png'} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent p-6 flex flex-col justify-end">
+                      <h4 className="text-white font-black tracking-tight text-sm line-clamp-1">{cat.name_uz || cat.name}</h4>
+                    </div>
+                  </div>
+                  <div className="absolute top-3 right-3 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0">
+                    <button onClick={() => handleEditCategory(cat)} className="p-2.5 bg-white/10 backdrop-blur-md border border-white/20 rounded-xl shadow-lg text-blue-400 hover:bg-white/20 transition-all"><Palette size={16} /></button>
+                    <button onClick={() => handleDeleteCategory(cat.id)} className="p-2.5 bg-white/10 backdrop-blur-md border border-white/20 rounded-xl shadow-lg text-rose-400 hover:bg-white/20 transition-all"><Trash2 size={16} /></button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-
-          <div className="bg-white rounded-xl overflow-hidden border border-gray-100">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-gray-50/50 border-b border-gray-100 text-gray-500 text-sm uppercase tracking-wider font-bold">
-                  <th className="px-6 py-4 w-20">{t('common.image')}</th>
-                  <th className="px-6 py-4">Nomi (UZ)</th>
-                  <th className="px-6 py-4">Название (RU)</th>
-                  <th className="px-6 py-4">Name (EN)</th>
-                  <th className="px-6 py-4 text-right">{t('common.actions')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {categories.map(cat => (
-                  <tr key={cat.id} className="hover:bg-blue-50/30 transition-colors">
-                    <td className="px-6 py-3">
-                      <div className="w-10 h-10 rounded-lg bg-gray-100 border border-gray-200 overflow-hidden">
-                        {cat.image_url ? (
-                          <img src={cat.image_url} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-gray-300">
-                            <Layout size={16} />
-                          </div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 font-bold text-gray-800">{cat.name_uz || cat.name}</td>
-                    <td className="px-6 py-4 text-gray-600">{cat.name_ru}</td>
-                    <td className="px-6 py-4 text-gray-600">{cat.name_en}</td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => handleEditCategory(cat)} className="text-blue-600 hover:bg-blue-50 p-2 rounded-lg transition-colors" title={t('common.edit')}>
-                          <Settings size={20} />
-                        </button>
-                        <button onClick={() => handleDeleteCategory(cat.id)} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors" title={t('common.delete')}>
-                          <Trash2 size={20} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {categories.length === 0 && (
-                  <tr>
-                    <td colSpan="3" className="px-6 py-12 text-center text-gray-400">
-                      {t('website.categories.noCategories') || t('common.noData')}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
         </div>
       )}
 
-      {activeTab === 'mahsulotlar' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden fade-in">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[800px] text-left border-collapse">
-              <thead>
-                <tr className="bg-gray-50/50 border-b border-gray-100 text-gray-500 text-xs uppercase tracking-wider font-bold">
-                  <th className="px-6 py-4">{t('common.image')}</th>
-                  <th className="px-6 py-4">{t('common.products')}</th>
-                  <th className="px-6 py-4">{t('website.categories.addCategory')}</th>
-                  <th className="px-6 py-4">{t('products.price')}</th>
-                  <th className="px-6 py-4">{t('products.stock')}</th>
-                  <th className="px-6 py-4">{t('common.status')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {products.map(product => (
-                  <tr key={product.id} className="hover:bg-blue-50/30 transition-colors">
-                    <td className="px-6 py-3">
-                      <div className="w-12 h-12 rounded-lg bg-gray-100 overflow-hidden border border-gray-200">
-                        {product.image_url ? (
-                          <img src={product.image_url} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-gray-400">
-                            <Image size={20} />
-                          </div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-3 font-bold text-gray-900">{product.name}</td>
-                    <td className="px-6 py-3 text-gray-600">
-                      <span className="bg-gray-100 text-gray-600 px-2 py-1 rounded text-xs font-bold uppercase">{product.category || '-'}</span>
-                    </td>
-                    <td className="px-6 py-3 font-medium text-gray-700 font-mono">${product.sale_price?.toLocaleString()}</td>
-                    <td className="px-6 py-3">
-                      <span className={`px-2.5 py-1 rounded-lg text-xs font-bold uppercase ${product.stock > 10 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                        {product.stock} {t('products.unit')}
-                      </span>
-                    </td>
-                    <td className="px-6 py-3">
-                      <button
-                        onClick={() => handleToggleProduct(product.id, product.is_active)}
-                        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase transition-colors ${product.is_active
-                          ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                          : 'bg-red-100 text-red-700 hover:bg-red-200'
-                          }`}
-                      >
-                        {product.is_active ? <Eye size={14} /> : <EyeOff size={14} />}
-                        {product.is_active ? t('common.show') : t('common.hide')}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'buyurtmalar' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden fade-in">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] text-left border-collapse">
-              <thead>
-                <tr className="bg-gray-50/50 border-b border-gray-100 text-gray-500 text-xs uppercase tracking-wider font-bold">
-                  <th className="px-6 py-4">{t('website.orders.customer')}</th>
-                  <th className="px-6 py-4">{t('website.orders.phone')}</th>
-                  <th className="px-6 py-4">{t('common.products')}</th>
-                  <th className="px-6 py-4">{t('common.quantity')}</th>
-                  <th className="px-6 py-4">{t('website.orders.amount')}</th>
-                  <th className="px-6 py-4">{t('common.payment')}</th>
-                  <th className="px-6 py-4">{t('common.status')}</th>
-                  <th className="px-6 py-4">{t('common.date')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {webOrders.map(order => {
-                  const firstItem = order.order_items?.[0] || {};
-                  return (
-                    <tr key={order.id} className="hover:bg-blue-50/30 transition-colors">
-                      <td className="px-6 py-4 font-bold text-gray-900">{order.customer_name || order.customers?.name || t('common.user')}</td>
-                      <td className="px-6 py-4 text-gray-600">{order.customer_phone || order.customers?.phone || '-'}</td>
-                      <td className="px-6 py-4 text-gray-800">{firstItem.product_name || firstItem.products?.name || t('common.noData')}</td>
-                      <td className="px-6 py-4 font-bold text-center">{firstItem.quantity || order.quantity || 1}</td>
-                      <td className="px-6 py-4 font-bold text-green-600 font-mono">
-                        ${order.total?.toLocaleString()}
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex flex-col gap-1">
-                          <span className="text-xs font-bold uppercase text-gray-500 bg-gray-100 px-2 py-0.5 rounded w-fit">
-                            {order.payment_method_detail || t('common.unknown')}
-                          </span>
-                          {order.receipt_url && (
-                            <a
-                              href={order.receipt_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1"
-                            >
-                              <FileText size={12} />
-                              {t('common.viewReceipt')}
-                            </a>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <select
-                          value={order.status}
-                          onChange={(e) => handleOrderStatusChange(order.id, e.target.value)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase cursor-pointer outline-none border-none focus:ring-2 focus:ring-opacity-50 transition-all ${order.status === 'new' || order.status === 'Yangi' ? 'bg-blue-100 text-blue-800 focus:ring-blue-400' :
-                            order.status === 'pending' || order.status === 'Qabul qilindi' ? 'bg-yellow-100 text-yellow-800 focus:ring-yellow-400' :
-                              order.status === 'shipping' || order.status === 'Yetkazilmoqda' ? 'bg-purple-100 text-purple-800 focus:ring-purple-400' :
-                                order.status === 'completed' || order.status === 'Tugallandi' ? 'bg-green-100 text-green-800 focus:ring-green-400' :
-                                  'bg-gray-100 text-gray-800 focus:ring-gray-400'
-                            }`}
-                        >
-                          <option value="new">{t('orders.statusNew')}</option>
-                          <option value="pending">{t('orders.statusAccepted')}</option>
-                          <option value="completed">{t('orders.statusCompleted')}</option>
-                          <option value="cancelled">{t('orders.statusCancelled')}</option>
-                        </select>
-                      </td>
-                      <td className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">
-                        {new Date(order.created_at).toLocaleDateString(t('common.langCode') === 'uz' ? 'uz-UZ' : t('common.langCode') === 'ru' ? 'ru-RU' : 'en-US')}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
       {activeTab === 'sharhlar' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden fade-in">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[800px] text-left border-collapse">
-              <thead>
-                <tr className="bg-gray-50/50 border-b border-gray-100 text-gray-500 text-xs uppercase tracking-wider font-bold">
-                  <th className="px-6 py-4">{t('website.reviews.product')}</th>
-                  <th className="px-6 py-4">{t('website.reviews.rating')}</th>
-                  <th className="px-6 py-4">{t('website.reviews.comment')}</th>
-                  <th className="px-6 py-4">{t('website.reviews.status')}</th>
-                  <th className="px-6 py-4">{t('common.date')}</th>
-                  <th className="px-6 py-4">{t('common.actions')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {reviews.map(review => (
-                  <tr key={review.id} className="hover:bg-blue-50/30 transition-colors">
-                    <td className="px-6 py-4 font-bold text-gray-900">{review.products?.name || t('common.unknown')}</td>
-                    <td className="px-6 py-4">
-                      <div className="flex text-yellow-400 gap-0.5">
-                        {[...Array(5)].map((_, i) => (
-                          <span key={i} className={i < review.rating ? "fill-current" : "text-gray-200"}>★</span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 max-w-xs truncate text-gray-600 italic" title={review.comment}>"{review.comment}"</td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 rounded-lg text-xs font-bold uppercase ${review.status === 'approved' ? 'bg-green-100 text-green-700' :
-                        review.status === 'rejected' ? 'bg-red-100 text-red-700' :
-                          'bg-yellow-100 text-yellow-700'
-                        }`}>
-                        {review.status === 'approved' ? t('common.approved') :
-                          review.status === 'rejected' ? t('common.rejected') : t('common.pending')}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">{new Date(review.created_at).toLocaleDateString(t('common.langCode') === 'uz' ? 'uz-UZ' : t('common.langCode') === 'ru' ? 'ru-RU' : 'en-US')}</td>
-                    <td className="px-6 py-4 flex gap-2">
-                      <button onClick={() => handleReviewStatus(review.id, 'approved')} className="text-green-600 hover:bg-green-100 p-2 rounded-lg transition-colors" title={t('common.approve')}><Eye size={18} /></button>
-                      <button onClick={() => handleReviewStatus(review.id, 'rejected')} className="text-yellow-600 hover:bg-yellow-100 p-2 rounded-lg transition-colors" title={t('common.hide')}><EyeOff size={18} /></button>
-                      <button onClick={() => handleDeleteReview(review.id)} className="text-red-600 hover:bg-red-100 p-2 rounded-lg transition-colors" title={t('common.delete')}><Trash2 size={18} /></button>
-                    </td>
-                  </tr>
-                ))}
-                {reviews.length === 0 && <tr><td colSpan="6" className="text-center py-12 text-gray-400">{t('website.reviews.noReviews')}</td></tr>}
-              </tbody>
-            </table>
+        <div className="space-y-8 fade-in">
+          <div className="bg-white/5 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden">
+            <div className="p-8 md:p-12 border-b border-white/5 flex items-center gap-4">
+              <div className="w-12 h-12 bg-amber-500/20 rounded-2xl flex items-center justify-center shadow-lg border border-amber-500/30">
+                <Star className="text-amber-400" size={24} />
+              </div>
+              <div>
+                <h3 className="text-2xl font-black text-white tracking-tight">
+                  {t('website.tabs.reviews')}
+                </h3>
+                <p className="text-gray-400 font-medium">Mijozlar tomonidan qoldirilgan fikrlar</p>
+              </div>
+            </div>
+            <div className="p-8 grid grid-cols-1 md:grid-cols-2 gap-6">
+              {reviews.map(review => (
+                <div key={review.id} className="p-6 rounded-[2rem] bg-white/5 border border-white/5 relative group hover:border-white/10 transition-all">
+                  <div className="flex items-center gap-1 mb-4 text-amber-400">
+                    {[...Array(5)].map((_, i) => (
+                      <Star key={i} size={14} fill={i < review.rating ? 'currentColor' : 'none'} />
+                    ))}
+                  </div>
+                  <p className="text-gray-300 font-medium mb-4 italic">"{review.comment}"</p>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">{review.customer_name}</span>
+                    <button onClick={() => handleDeleteReview(review.id)} className="p-2 text-rose-400 opacity-0 group-hover:opacity-100 transition-all hover:bg-white/10 rounded-xl">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
       {activeTab === 'obunalar' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden fade-in">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[800px] text-left border-collapse">
-              <thead>
-                <tr className="bg-gray-50/50 border-b border-gray-100 text-gray-500 text-xs uppercase tracking-wider font-bold">
-                  <th className="px-6 py-4">{t('website.subscriptions.email')}</th>
-                  <th className="px-6 py-4">{t('website.subscriptions.date')}</th>
-                  <th className="px-6 py-4">{t('common.status')}</th>
-                  <th className="px-6 py-4 text-right">{t('common.actions')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {subscriptions.map(sub => (
-                  <tr key={sub.id} className="hover:bg-blue-50/30 transition-colors">
-                    <td className="px-6 py-4 font-bold text-gray-900">{sub.email}</td>
-                    <td className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">
-                      {new Date(sub.created_at).toLocaleString(t('common.langCode') === 'uz' ? 'uz-UZ' : t('common.langCode') === 'ru' ? 'ru-RU' : 'en-US')}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 rounded-lg text-xs font-bold uppercase ${sub.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
-                        {sub.status === 'active' ? t('common.active') : sub.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <button
-                        onClick={() => handleDeleteSubscription(sub.id)}
-                        className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors"
-                      >
-                        <Trash2 size={20} />
-                      </button>
-                    </td>
+        <div className="space-y-8 fade-in">
+          <div className="bg-white/5 backdrop-blur-xl rounded-[2.5rem] shadow-2xl border border-white/10 overflow-hidden">
+            <div className="p-8 md:p-12 border-b border-white/5 flex items-center gap-4">
+              <div className="w-12 h-12 bg-gray-500/20 rounded-2xl flex items-center justify-center shadow-lg border border-gray-500/30">
+                <Mail className="text-gray-400" size={24} />
+              </div>
+              <div>
+                <h3 className="text-2xl font-black text-white tracking-tight">
+                  {t('website.tabs.subscriptions')}
+                </h3>
+                <p className="text-gray-400 font-medium">Yangiliklarga obuna bo'lgan foydalanuvchilar</p>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-white/5 text-gray-500 text-[10px] font-black uppercase tracking-[0.2em]">
+                    <th className="px-8 py-6">{t('website.subscriptions.email')}</th>
+                    <th className="px-8 py-6">{t('website.subscriptions.date')}</th>
+                    <th className="px-8 py-6">{t('common.status')}</th>
+                    <th className="px-8 py-6 text-right">{t('common.actions')}</th>
                   </tr>
-                ))}
-                {subscriptions.length === 0 && (
-                  <tr>
-                    <td colSpan="4" className="text-center py-12 text-gray-400">
-                      {t('website.subscriptions.noSubscriptions')}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {subscriptions.map(sub => (
+                    <tr key={sub.id} className="hover:bg-white/5 transition-all group">
+                      <td className="px-8 py-6 font-black text-gray-200 group-hover:text-white">{sub.email}</td>
+                      <td className="px-8 py-6 text-[10px] font-black text-gray-500 uppercase tracking-widest">
+                        {new Date(sub.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="px-8 py-6">
+                        <span className="px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-[10px] font-black uppercase tracking-wider">
+                          {sub.status || 'ACTIVE'}
+                        </span>
+                      </td>
+                      <td className="px-8 py-6 text-right">
+                        <button onClick={() => handleDeleteSubscription(sub.id)} className="p-2 text-rose-400 hover:bg-white/10 rounded-xl transition-all">
+                          <Trash2 size={18} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

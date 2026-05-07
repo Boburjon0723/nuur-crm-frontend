@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
-import { supabase } from '@/lib/supabase'
 import { 
     Users, 
     ChevronRight, 
@@ -13,13 +12,16 @@ import {
     DollarSign,
     Calendar,
     FileText,
-    History
+    History,
+    ArrowLeft
 } from 'lucide-react'
 import { useLanguage } from '@/context/LanguageContext'
 import { 
     normalizeFinCurrency, 
     formatFinAmount 
 } from '@/utils/financeCurrency'
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
 
 export default function PartnersFinanceSubView() {
     const { t } = useLanguage()
@@ -44,19 +46,16 @@ export default function PartnersFinanceSubView() {
     async function fetchData() {
         try {
             setLoading(true)
-            const { data: p } = await supabase
-                .from('finance_partners')
-                .select('*')
-                .eq('is_active', true)
-                .order('name_uz', { ascending: true })
+            const token = localStorage.getItem('nuurhome_token') || localStorage.getItem('crm_token')
+            const headers = { 'Authorization': `Bearer ${token}` }
 
-            const { data: e } = await supabase
-                .from('partner_finance_entries')
-                .select('*')
-                .order('entry_date', { ascending: false })
+            const [pRes, eRes] = await Promise.all([
+                fetch(`${API_BASE_URL}/finance/partners`, { headers }).then(r => r.json()),
+                fetch(`${API_BASE_URL}/finance/partner-entries`, { headers }).then(r => r.json())
+            ])
 
-            setPartners(p || [])
-            setEntries(e || [])
+            setPartners(Array.isArray(pRes) ? pRes : (pRes.data || []))
+            setEntries(Array.isArray(eRes) ? eRes : (eRes.data || []))
         } catch (error) {
             console.error('Error fetching partner data:', error)
         } finally {
@@ -75,8 +74,6 @@ export default function PartnersFinanceSubView() {
                 const amt = Number(e.amount_uzs) || 0
                 const cur = normalizeFinCurrency(e.currency)
                 
-                // supply (kirim) / payment_in (tushum) -> increases what we owe or decreases what they owe
-                // payment (to'lov) / sale_out (sotish) -> decreases what we owe or increases what they owe
                 if (e.entry_type === 'supply' || e.entry_type === 'payment_in') {
                     if (cur === 'USD') usd += amt
                     else uzs += amt
@@ -98,17 +95,24 @@ export default function PartnersFinanceSubView() {
         if (!amount || amount <= 0) return
 
         try {
-            const { error } = await supabase.from('partner_finance_entries').insert([{
-                partner_id: selectedPartner.id,
-                entry_type: formType,
-                amount_uzs: amount,
-                currency: form.currency,
-                entry_date: form.date,
-                description: form.description.trim() || null,
-                reference_code: `MOB-${Math.random().toString(36).slice(2, 8).toUpperCase()}`
-            }])
+            const token = localStorage.getItem('nuurhome_token') || localStorage.getItem('crm_token')
+            const response = await fetch(`${API_BASE_URL}/finance/partner-entries`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    partner_id: selectedPartner.id,
+                    entry_type: formType,
+                    amount_uzs: amount,
+                    currency: form.currency,
+                    entry_date: form.date,
+                    description: form.description.trim() || null
+                })
+            })
 
-            if (error) throw error
+            if (!response.ok) throw new Error('Saqlashda xatolik')
 
             setShowAddForm(false)
             setForm({
@@ -126,9 +130,9 @@ export default function PartnersFinanceSubView() {
 
     if (loading) {
         return (
-            <div className="flex flex-col items-center justify-center p-12 space-y-4 text-slate-400">
-                <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
-                <p className="text-sm font-medium">Hamkorlar yuklanmoqda...</p>
+            <div className="flex flex-col items-center justify-center p-20 space-y-4">
+                <Loader2 className="w-10 h-10 text-[#8B5E3C] animate-spin" />
+                <p className="text-[10px] font-black text-[#2D241E]/20 uppercase tracking-widest">Yuklanmoqda...</p>
             </div>
         )
     }
@@ -138,183 +142,157 @@ export default function PartnersFinanceSubView() {
         const partnerEntries = entries.filter(e => e.partner_id === selectedPartner.id)
 
         return (
-            <div className="p-6 space-y-6">
+            <div className="p-6 space-y-8 animate-in fade-in duration-500 bg-[#FDFBF7] min-h-screen">
                 {/* Partner Detail Card */}
-                <div className="p-6 rounded-3xl bg-white/5 border border-white/10 space-y-4">
-                    <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-2xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
-                            <Users size={24} />
+                <div className="p-8 rounded-[2.5rem] bg-white border border-[#E8E2D9] shadow-sm space-y-8 relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-[#8B5E3C]/5 blur-3xl rounded-full" />
+                    
+                    <div className="flex items-center gap-5 relative z-10">
+                        <div className="w-16 h-16 rounded-3xl bg-[#F7F5F0] text-[#8B5E3C] flex items-center justify-center border border-[#E8E2D9]">
+                            <Users size={32} />
                         </div>
-                        <div>
-                            <h3 className="text-lg font-bold text-white">{selectedPartner.name_uz}</h3>
-                            <p className="text-xs text-slate-500">{selectedPartner.phone || 'Telefon yo\'q'}</p>
+                        <div className="flex-1 min-w-0">
+                            <h3 className="text-xl font-black text-[#2D241E] uppercase italic truncate">{selectedPartner.name_uz || selectedPartner.name}</h3>
+                            <p className="text-[10px] font-bold text-[#2D241E]/30 uppercase tracking-widest mt-1">{selectedPartner.phone || 'Telefon raqami yo\'q'}</p>
                         </div>
                         <button 
                             onClick={() => setSelectedPartner(null)}
-                            className="ml-auto p-2 text-slate-500"
+                            className="w-10 h-10 flex items-center justify-center bg-[#F7F5F0] rounded-xl text-[#2D241E]/20"
                         >
-                            <X size={20} />
+                            <X size={24} />
                         </button>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
-                        <div className="p-4 rounded-2xl bg-white/5 border border-white/5">
-                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter mb-1">Balans (UZS)</p>
-                            <p className={`text-sm font-bold ${balance.UZS > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                {balance.UZS > 0 ? 'Biz qarzdormiz' : 'Ular qarzdor'}
-                                <br />
-                                <span className="text-lg tabular-nums">{Math.abs(balance.UZS).toLocaleString()}</span>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="p-5 rounded-[2rem] bg-[#F7F5F0] border border-[#E8E2D9]">
+                            <p className="text-[9px] font-black text-[#2D241E]/30 uppercase tracking-widest mb-2">UZS (So'm)</p>
+                            <h4 className="text-lg font-black text-[#2D241E] tabular-nums">{Math.abs(balance.UZS).toLocaleString()}</h4>
+                            <p className={`text-[8px] font-black uppercase mt-1 ${balance.UZS > 0 ? 'text-[#D44D44]' : 'text-[#44A678]'}`}>
+                                {balance.UZS > 0 ? 'Qarzdormiz' : 'Qarzdor'}
                             </p>
                         </div>
-                        <div className="p-4 rounded-2xl bg-white/5 border border-white/5">
-                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-tighter mb-1">Balans (USD)</p>
-                            <p className={`text-sm font-bold ${balance.USD > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                {balance.USD > 0 ? 'Biz qarzdormiz' : 'Ular qarzdor'}
-                                <br />
-                                <span className="text-lg tabular-nums">${Math.abs(balance.USD).toLocaleString()}</span>
+                        <div className="p-5 rounded-[2rem] bg-[#F7F5F0] border border-[#E8E2D9]">
+                            <p className="text-[9px] font-black text-[#2D241E]/30 uppercase tracking-widest mb-2">USD ($)</p>
+                            <h4 className="text-lg font-black text-[#2D241E] tabular-nums">${Math.abs(balance.USD).toLocaleString()}</h4>
+                            <p className={`text-[8px] font-black uppercase mt-1 ${balance.USD > 0 ? 'text-[#D44D44]' : 'text-[#44A678]'}`}>
+                                {balance.USD > 0 ? 'Qarzdormiz' : 'Qarzdor'}
                             </p>
                         </div>
                     </div>
 
-                    <div className="flex gap-2">
+                    <div className="flex gap-4">
                         <button 
                             onClick={() => { setFormType('payment'); setShowAddForm(true); }}
-                            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-rose-500 text-white text-xs font-bold active:scale-95 transition-all shadow-lg shadow-rose-500/20"
+                            className="flex-1 py-5 rounded-2xl bg-[#D44D44] text-white text-[10px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all"
                         >
-                            <ArrowUpCircle size={16} />
-                            To'lov berish
+                            TO'LOV
                         </button>
                         <button 
                             onClick={() => { setFormType('payment_in'); setShowAddForm(true); }}
-                            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl bg-emerald-500 text-white text-xs font-bold active:scale-95 transition-all shadow-lg shadow-emerald-500/20"
+                            className="flex-1 py-5 rounded-2xl bg-[#44A678] text-white text-[10px] font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all"
                         >
-                            <ArrowDownCircle size={16} />
-                            Tushum olish
+                            TUSHUM
                         </button>
                     </div>
                 </div>
 
-                {/* History */}
-                <div className="space-y-4">
-                    <div className="flex items-center gap-2 text-slate-400">
-                        <History size={16} />
-                        <h4 className="text-xs font-bold uppercase tracking-widest">Amallar tarixi</h4>
+                {/* Entries History */}
+                <div className="space-y-4 pb-20">
+                    <div className="flex items-center justify-between px-2">
+                        <h4 className="text-[10px] font-black text-[#2D241E]/30 uppercase tracking-[0.2em]">Amallar tarixi</h4>
+                        <History size={14} className="text-[#2D241E]/10" />
                     </div>
                     <div className="space-y-3">
                         {partnerEntries.map(e => (
-                            <div key={e.id} className="p-4 rounded-2xl bg-white/5 border border-white/5 flex items-center gap-4">
-                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                            <div key={e.id} className="p-5 rounded-[2rem] bg-white border border-[#E8E2D9] flex items-center gap-5 shadow-sm">
+                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
                                     (e.entry_type === 'supply' || e.entry_type === 'payment_in') 
-                                        ? 'bg-emerald-500/10 text-emerald-400' 
-                                        : 'bg-rose-500/10 text-rose-400'
+                                        ? 'bg-[#44A678]/10 text-[#44A678]' 
+                                        : 'bg-[#D44D44]/10 text-[#D44D44]'
                                 }`}>
                                     {(e.entry_type === 'supply' || e.entry_type === 'payment_in') ? <ArrowDownCircle size={20} /> : <ArrowUpCircle size={20} />}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-bold text-white truncate">
-                                        {e.entry_type === 'supply' ? 'Xomashyo kirimi' : 
-                                         e.entry_type === 'payment_in' ? 'Hamkor tushumi' :
-                                         e.entry_type === 'sale_out' ? 'Sotish (chiqim)' : 'Hamkorga to\'lov'}
+                                    <p className="text-[11px] font-black text-[#2D241E] truncate uppercase italic">
+                                        {e.entry_type === 'supply' ? 'Xomashyo' : 
+                                         e.entry_type === 'payment_in' ? 'Tushum' :
+                                         e.entry_type === 'sale_out' ? 'Sotuv' : 'To\'lov'}
                                     </p>
-                                    <p className="text-[10px] text-slate-500">{e.entry_date}</p>
+                                    <p className="text-[9px] font-bold text-[#2D241E]/20 uppercase mt-0.5 tracking-widest">{e.entry_date}</p>
                                 </div>
                                 <div className="text-right">
-                                    <p className={`text-sm font-bold tabular-nums ${
-                                        (e.entry_type === 'supply' || e.entry_type === 'payment_in') ? 'text-emerald-400' : 'text-rose-400'
+                                    <p className={`text-[13px] font-black tabular-nums ${
+                                        (e.entry_type === 'supply' || e.entry_type === 'payment_in') ? 'text-[#44A678]' : 'text-[#D44D44]'
                                     }`}>
                                         {(e.entry_type === 'supply' || e.entry_type === 'payment_in') ? '+' : '-'}
                                         {normalizeFinCurrency(e.currency) === 'USD' ? '$' : ''}
                                         {Number(e.amount_uzs).toLocaleString()}
                                     </p>
-                                    <p className="text-[10px] text-slate-700 font-mono tracking-tighter">{e.reference_code}</p>
                                 </div>
                             </div>
                         ))}
                     </div>
                 </div>
 
-                {/* Modal Form */}
+                {/* Form Modal */}
                 {showAddForm && (
-                    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                        <div className="w-full max-w-md bg-slate-900 rounded-t-[40px] sm:rounded-[40px] border border-white/10 p-8 shadow-2xl space-y-6 animate-in slide-in-from-bottom duration-300">
-                            <div className="flex items-center justify-between">
-                                <h3 className="text-xl font-bold text-white">
-                                    {formType === 'payment' ? 'Hamkorga to\'lov' : 'Hamkordan tushum'}
-                                </h3>
-                                <button onClick={() => setShowAddForm(false)} className="p-2 text-slate-500 hover:text-white">
-                                    <X size={24} />
-                                </button>
-                            </div>
+                    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6">
+                        <div className="absolute inset-0 bg-[#2D241E]/40 backdrop-blur-sm" onClick={() => setShowAddForm(false)} />
+                        <div className="relative w-full max-w-sm bg-white rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 duration-200">
+                            <h3 className="text-lg font-black text-[#2D241E] uppercase tracking-tight mb-8 text-center">
+                                {formType === 'payment' ? "To'lov Qilish" : "Tushum Olish"}
+                            </h3>
 
-                            <form onSubmit={handleSaveEntry} className="space-y-4">
-                                <div className="space-y-2">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Summa</label>
-                                    <div className="relative group">
-                                        <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-indigo-400 transition-colors">
-                                            <DollarSign size={20} />
-                                        </div>
+                            <form onSubmit={handleSaveEntry} className="space-y-6">
+                                <div className="space-y-1">
+                                    <label className="text-[9px] font-black text-[#2D241E]/30 uppercase tracking-widest ml-1">Summa</label>
+                                    <input 
+                                        type="number"
+                                        value={form.amount}
+                                        onChange={e => setForm({...form, amount: e.target.value})}
+                                        className="w-full bg-[#F7F5F0] border border-[#E8E2D9] rounded-2xl py-5 px-6 text-[#2D241E] font-black text-center outline-none text-xl"
+                                        required
+                                    />
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-1">
+                                        <label className="text-[9px] font-black text-[#2D241E]/30 uppercase tracking-widest ml-1">Valyuta</label>
+                                        <select 
+                                            value={form.currency}
+                                            onChange={e => setForm({...form, currency: e.target.value})}
+                                            className="w-full bg-[#F7F5F0] border border-[#E8E2D9] rounded-2xl py-4 px-3 text-[#2D241E] font-bold outline-none h-[58px] text-xs"
+                                        >
+                                            <option value="UZS">UZS</option>
+                                            <option value="USD">USD</option>
+                                        </select>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[9px] font-black text-[#2D241E]/30 uppercase tracking-widest ml-1">Sana</label>
                                         <input 
-                                            type="number"
-                                            value={form.amount}
-                                            onChange={e => setForm({...form, amount: e.target.value})}
-                                            placeholder="0.00"
-                                            className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white font-bold outline-none focus:border-indigo-500 transition-all text-lg"
+                                            type="date"
+                                            value={form.date}
+                                            onChange={e => setForm({...form, date: e.target.value})}
+                                            className="w-full bg-[#F7F5F0] border border-[#E8E2D9] rounded-2xl py-4 px-3 text-[#2D241E] font-bold outline-none h-[58px] text-[10px]"
                                             required
                                         />
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Valyuta</label>
-                                        <select 
-                                            value={form.currency}
-                                            onChange={e => setForm({...form, currency: e.target.value})}
-                                            className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 px-4 text-white font-bold outline-none focus:border-indigo-500 transition-all"
-                                        >
-                                            <option value="UZS">So'm (UZS)</option>
-                                            <option value="USD">Dollar (USD)</option>
-                                        </select>
-                                    </div>
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Sana</label>
-                                        <div className="relative">
-                                            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">
-                                                <Calendar size={18} />
-                                            </div>
-                                            <input 
-                                                type="date"
-                                                value={form.date}
-                                                onChange={e => setForm({...form, date: e.target.value})}
-                                                className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white font-bold outline-none focus:border-indigo-500 transition-all text-xs"
-                                                required
-                                            />
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="space-y-2">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-1">Izoh (ixtiyoriy)</label>
-                                    <div className="relative">
-                                        <div className="absolute left-4 top-4 text-slate-500">
-                                            <FileText size={18} />
-                                        </div>
-                                        <textarea 
-                                            value={form.description}
-                                            onChange={e => setForm({...form, description: e.target.value})}
-                                            className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-12 pr-4 text-white font-medium outline-none focus:border-indigo-500 transition-all h-24 text-sm"
-                                            placeholder="To'lov haqida qo'shimcha ma'lumot..."
-                                        />
-                                    </div>
-                                </div>
+                                <textarea 
+                                    value={form.description}
+                                    onChange={e => setForm({...form, description: e.target.value})}
+                                    className="w-full bg-[#F7F5F0] border border-[#E8E2D9] rounded-2xl py-4 px-6 text-sm text-[#2D241E] font-medium outline-none h-24 resize-none"
+                                    placeholder="Izoh..."
+                                />
 
                                 <button 
                                     type="submit"
-                                    className={`w-full py-5 rounded-3xl font-bold text-white shadow-2xl transition-all active:scale-95 ${
-                                        formType === 'payment' ? 'bg-rose-600 shadow-rose-600/30' : 'bg-emerald-600 shadow-emerald-600/30'
+                                    className={`w-full py-5 rounded-2xl text-white text-[10px] font-black uppercase tracking-[0.2em] shadow-lg active:scale-95 transition-all ${
+                                        formType === 'payment' ? 'bg-[#D44D44]' : 'bg-[#44A678]'
                                     }`}
                                 >
-                                    {formType === 'payment' ? 'To\'lovni tasdiqlash' : 'Tushumni tasdiqlash'}
+                                    SAQLASH
                                 </button>
                             </form>
                         </div>
@@ -326,40 +304,43 @@ export default function PartnersFinanceSubView() {
 
     return (
         <div className="p-6 space-y-6">
-            <h2 className="text-xl font-bold text-white mb-2">Hamkorlar ro'yxati</h2>
-            <div className="grid gap-4">
+            <div className="flex items-center justify-between px-1">
+                <h2 className="text-[10px] font-black text-[#2D241E]/20 uppercase tracking-[0.3em]">Hamkorlar Ro'yxati</h2>
+                <Users size={14} className="text-[#2D241E]/10" />
+            </div>
+            <div className="grid gap-4 pb-20">
                 {partners.map(p => {
                     const balance = partnerBalances[p.id] || { UZS: 0, USD: 0 }
-                    const isNeutral = Math.abs(balance.UZS) < 0.1 && Math.abs(balance.USD) < 0.1
                     const ourDebt = balance.UZS > 0 || balance.USD > 0
+                    const isNeutral = Math.abs(balance.UZS) < 1 && Math.abs(balance.USD) < 0.01
 
                     return (
                         <div 
                             key={p.id}
                             onClick={() => setSelectedPartner(p)}
-                            className="p-5 rounded-3xl bg-white/5 border border-white/10 hover:bg-white/10 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-4 group"
+                            className="bg-white border border-[#E8E2D9] rounded-[2rem] p-6 flex items-center gap-5 shadow-sm active:scale-[0.98] transition-all group"
                         >
-                            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
-                                isNeutral ? 'bg-slate-500/10 text-slate-400' : 
-                                ourDebt ? 'bg-rose-500/10 text-rose-400' : 'bg-emerald-500/10 text-emerald-400'
+                            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 border ${
+                                isNeutral ? 'bg-[#F7F5F0] border-[#E8E2D9] text-[#2D241E]/10' :
+                                ourDebt ? 'bg-[#D44D44]/5 border-[#D44D44]/10 text-[#D44D44]' : 'bg-[#44A678]/5 border-[#44A678]/10 text-[#44A678]'
                             }`}>
-                                <Users size={24} />
+                                <Users size={26} />
                             </div>
 
                             <div className="flex-1 min-w-0">
-                                <h3 className="text-sm font-bold text-white group-hover:text-indigo-400 transition-colors">{p.name_uz}</h3>
-                                <div className="flex items-center gap-3 text-[10px] font-medium mt-1">
-                                    <span className={balance.UZS > 0 ? 'text-rose-400/80' : 'text-emerald-400/80'}>
+                                <h3 className="text-[13px] font-black text-[#2D241E] uppercase italic truncate">{p.name_uz || p.name}</h3>
+                                <div className="flex items-center gap-3 mt-1.5 tabular-nums">
+                                    <span className={`text-[10px] font-black ${balance.UZS > 0 ? 'text-[#D44D44]/60' : 'text-[#44A678]/60'}`}>
                                         {Math.abs(balance.UZS).toLocaleString()} UZS
                                     </span>
-                                    <span className="w-1 h-1 rounded-full bg-slate-700" />
-                                    <span className={balance.USD > 0 ? 'text-rose-400/80' : 'text-emerald-400/80'}>
+                                    <div className="w-1 h-1 rounded-full bg-[#E8E2D9]" />
+                                    <span className={`text-[10px] font-black ${balance.USD > 0 ? 'text-[#D44D44]/60' : 'text-[#44A678]/60'}`}>
                                         ${Math.abs(balance.USD).toLocaleString()}
                                     </span>
                                 </div>
                             </div>
 
-                            <ChevronRight size={18} className="text-slate-700 group-hover:text-slate-400 transition-colors" />
+                            <ChevronRight size={20} className="text-[#E8E2D9] group-hover:text-[#8B5E3C] transition-colors" />
                         </div>
                     )
                 })}

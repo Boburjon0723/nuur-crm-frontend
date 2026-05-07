@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { API_URL } from '@/app/buyurtmalar/utils'
 import Header from '@/components/Header'
 import {
     UserPlus,
@@ -284,110 +284,60 @@ export default function Xodimlar() {
         const silent = opts?.silent === true
         try {
             if (!silent) setLoading(true)
-            const { data, error } = await supabase
-                .from('employees')
-                .select('*')
-                .order('created_at', { ascending: false })
-
-            if (error) throw error
+            
+            // Backend API orqali xodimlarni olish
+            const res = await fetch(`${API_URL}/employees`)
+            if (!res.ok) throw new Error('Xodimlarni yuklab boʻlmadi')
+            const data = await res.json()
             const rows = data || []
             setEmployees(rows)
 
-            /**
-             * Oy filtrini serverda emas, mahalliy kalendarda qo‘llaymiz: PostgREST DATE/timestamptz
-             * bilan .gte/.lte ba’zan yozuvni “yo‘q” qilib qo‘yadi (vaqt zonasi / tip).
-             * Tanlangan oy almashtirilganda qayta yuklash shart emas — `advancesRaw` + useMemo.
-             */
-            const { data: advRows, error: advErr } = await supabase
-                .from('employee_advances')
-                .select('id, employee_id, amount, advance_date, note, created_at')
-                .order('created_at', { ascending: false })
-                .limit(5000)
+            // Avanslar (Backend xodim bilan birga include qilib qaytarishi ham mumkin, 
+            // lekin bu yerda alohida massivlarga yoyamiz)
+            const allAdvances = []
+            const allSalaries = []
+            rows.forEach(emp => {
+                if (emp.advances) allAdvances.push(...emp.advances)
+                if (emp.salaries) allSalaries.push(...emp.salaries)
+            })
 
-            if (advErr) {
-                const msg = String(advErr.message || '')
-                if (!msg.includes('Could not find the table') && !msg.includes('does not exist')) {
-                    console.warn('employee_advances:', advErr.message)
-                }
-                setAdvancesRaw([])
-                const missing =
-                    msg.includes('Could not find the table') || msg.includes('does not exist')
-                setAdvancesTableMissing(missing)
-                setAdvancesLoadError(missing ? null : msg || String(advErr.code || ''))
-            } else {
-                setAdvancesTableMissing(false)
-                setAdvancesLoadError(null)
-                setAdvancesRaw(advRows || [])
+            setAdvancesRaw(allAdvances)
+            setSalaryRaw(allSalaries)
+            setAdvancesTableMissing(false)
+            setSalaryPaymentsTableMissing(false)
+            
+            // Payroll closures va boshqalar (Legacy logic)
+            setClosedPeriodYms([]) 
+            setPayrollClosuresTableMissing(false)
+            setApprovedLeaveDatesByEmployee({})
+
+            // Fetch closures and leaves
+            const [closuresRes, leavesRes] = await Promise.all([
+                fetch(`${API_URL}/employees/closures`).catch(() => null),
+                fetch(`${API_URL}/employees/leaves`).catch(() => null)
+            ])
+            
+            const closeRows = closuresRes?.ok ? await closuresRes.json() : []
+            const leaveRows = leavesRes?.ok ? await leavesRes.json() : []
+
+            setClosedPeriodYms((closeRows || []).map((r) => r.period_ym).filter(Boolean))
+
+            const byKey = {}
+            for (const r of leaveRows || []) {
+                const k = employeeMapKey(r.employee_id)
+                if (!k) continue
+                const iso = r.resolved_at || r.createdAt
+                const ymd = calendarYmdForFilter(iso)
+                if (!ymd) continue
+                if (!byKey[k]) byKey[k] = new Set()
+                byKey[k].add(ymd)
             }
-
-            const { data: salRows, error: salErr } = await supabase
-                .from('employee_salary_payments')
-                .select('id, employee_id, amount, payment_date, note, created_at')
-                .order('created_at', { ascending: false })
-                .limit(5000)
-
-            if (salErr) {
-                const msg = String(salErr.message || '')
-                if (!msg.includes('Could not find the table') && !msg.includes('does not exist')) {
-                    console.warn('employee_salary_payments:', salErr.message)
-                }
-                setSalaryRaw([])
-                setSalaryPaymentsTableMissing(
-                    msg.includes('Could not find the table') || msg.includes('does not exist')
-                )
-            } else {
-                setSalaryPaymentsTableMissing(false)
-                setSalaryRaw(salRows || [])
+            const out = {}
+            for (const k of Object.keys(byKey)) {
+                const days = [...byKey[k]].sort((a, b) => b.localeCompare(a))
+                out[k] = days.map((ymd) => formatYmdUz(ymd))
             }
-
-            const { data: closeRows, error: closeErr } = await supabase
-                .from('employee_payroll_month_closures')
-                .select('period_ym')
-                .order('period_ym', { ascending: false })
-
-            if (closeErr) {
-                const msg = String(closeErr.message || '')
-                const missing =
-                    msg.includes('Could not find the table') || msg.includes('does not exist')
-                setPayrollClosuresTableMissing(missing)
-                if (!missing) console.warn('employee_payroll_month_closures:', closeErr.message)
-                setClosedPeriodYms([])
-            } else {
-                setPayrollClosuresTableMissing(false)
-                setClosedPeriodYms((closeRows || []).map((r) => r.period_ym).filter(Boolean))
-            }
-
-            const { data: leaveRows, error: leaveErr } = await supabase
-                .from('employee_leave_requests')
-                .select('employee_id, resolved_at, created_at, status')
-                .eq('status', 'approved')
-                .order('resolved_at', { ascending: false })
-                .limit(3000)
-
-            if (leaveErr) {
-                const msg = String(leaveErr.message || '')
-                if (!msg.includes('Could not find the table') && !msg.includes('does not exist')) {
-                    console.warn('employee_leave_requests:', leaveErr.message)
-                }
-                setApprovedLeaveDatesByEmployee({})
-            } else {
-                const byKey = {}
-                for (const r of leaveRows || []) {
-                    const k = employeeMapKey(r.employee_id)
-                    if (!k) continue
-                    const iso = r.resolved_at || r.created_at
-                    const ymd = calendarYmdForFilter(iso)
-                    if (!ymd) continue
-                    if (!byKey[k]) byKey[k] = new Set()
-                    byKey[k].add(ymd)
-                }
-                const out = {}
-                for (const k of Object.keys(byKey)) {
-                    const days = [...byKey[k]].sort((a, b) => b.localeCompare(a))
-                    out[k] = days.map((ymd) => formatYmdUz(ymd))
-                }
-                setApprovedLeaveDatesByEmployee(out)
-            }
+            setApprovedLeaveDatesByEmployee(out)
         } catch (error) {
             console.error('Error loading employees:', error)
         } finally {
@@ -401,20 +351,18 @@ export default function Xodimlar() {
 
     async function executeCloseMonth(periodYm) {
         try {
-            const { error } = await supabase.from('employee_payroll_month_closures').insert({
-                period_ym: periodYm,
-                source: 'crm'
+            const res = await fetch(`${API_URL}/employees/closures`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ period_ym: periodYm, source: 'crm' })
             })
-            if (error) {
-                const dup =
-                    String(error.code) === '23505' ||
-                    String(error.message || '')
-                        .toLowerCase()
-                        .includes('duplicate')
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}))
+                const dup = String(data.code) === 'P2002' || String(data.message || '').toLowerCase().includes('unique')
                 if (dup) {
                     await showAlert(t('employees.payrollMonthAlreadyClosed'), { variant: 'warning' })
                 } else {
-                    throw error
+                    throw new Error(data.message || 'Xatolik')
                 }
             } else {
                 await showAlert(t('employees.payrollMonthClosedOk'), { variant: 'success' })
@@ -428,11 +376,8 @@ export default function Xodimlar() {
 
     async function executeReopenMonth(periodYm) {
         try {
-            const { error } = await supabase
-                .from('employee_payroll_month_closures')
-                .delete()
-                .eq('period_ym', periodYm)
-            if (error) throw error
+            const res = await fetch(`${API_URL}/employees/closures/${periodYm}`, { method: 'DELETE' })
+            if (!res.ok) throw new Error('Ochishda xatolik')
             await showAlert(t('employees.payrollMonthReopenedOk'), { variant: 'success' })
             await loadEmployees({ silent: true })
         } catch (err) {
@@ -449,8 +394,8 @@ export default function Xodimlar() {
         const line = `${employeeName} — ${formatAdvanceDate(row.advance_date)} · ${formatUzs(row.amount)}`
         if (!(await showConfirm(`${t('employees.deleteOneAdvance')}?\n${line}`, { variant: 'warning' }))) return
         try {
-            const { error } = await supabase.from('employee_advances').delete().eq('id', row.id)
-            if (error) throw error
+            const res = await fetch(`${API_URL}/employees/advance/${row.id}`, { method: 'DELETE' })
+            if (!res.ok) throw new Error('Xatolik')
             await showAlert(t('employees.advanceDeletedOk'), { variant: 'success' })
             await loadEmployees({ silent: true })
         } catch (err) {
@@ -470,8 +415,12 @@ export default function Xodimlar() {
         )
             return
         try {
-            const { error } = await supabase.from('employee_advances').delete().in('id', ids)
-            if (error) throw error
+            const res = await fetch(`${API_URL}/employees/advance/bulk-delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids })
+            })
+            if (!res.ok) throw new Error('Xatolik')
             await showAlert(t('employees.advancesBulkDeletedOk'), { variant: 'success' })
             await loadEmployees({ silent: true })
         } catch (err) {
@@ -488,8 +437,8 @@ export default function Xodimlar() {
         const line = `${employeeName} — ${formatAdvanceDate(row.payment_date)} · ${formatUzs(row.amount)}`
         if (!(await showConfirm(`${t('employees.deleteOneSalaryPayment')}?\n${line}`, { variant: 'warning' }))) return
         try {
-            const { error } = await supabase.from('employee_salary_payments').delete().eq('id', row.id)
-            if (error) throw error
+            const res = await fetch(`${API_URL}/employees/salary/${row.id}`, { method: 'DELETE' })
+            if (!res.ok) throw new Error('Xatolik')
             await showAlert(t('employees.salaryPaymentDeletedOk'), { variant: 'success' })
             await loadEmployees({ silent: true })
         } catch (err) {
@@ -509,8 +458,12 @@ export default function Xodimlar() {
         )
             return
         try {
-            const { error } = await supabase.from('employee_salary_payments').delete().in('id', ids)
-            if (error) throw error
+            const res = await fetch(`${API_URL}/employees/salary/bulk-delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids })
+            })
+            if (!res.ok) throw new Error('Xatolik')
             await showAlert(t('employees.salaryPaymentsBulkDeletedOk'), { variant: 'success' })
             await loadEmployees({ silent: true })
         } catch (err) {
@@ -582,12 +535,20 @@ export default function Xodimlar() {
             }
 
             if (editId) {
-                const { error } = await supabase.from('employees').update(employeeData).eq('id', editId)
-                if (error) throw error
+                const res = await fetch(`${API_URL}/employees/${editId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(employeeData)
+                })
+                if (!res.ok) throw new Error('Saqlashda xatolik')
                 setEditId(null)
             } else {
-                const { error } = await supabase.from('employees').insert([employeeData])
-                if (error) throw error
+                const res = await fetch(`${API_URL}/employees`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(employeeData)
+                })
+                if (!res.ok) throw new Error('Qoʻshishda xatolik')
             }
 
             setForm({
@@ -623,8 +584,8 @@ export default function Xodimlar() {
     async function handleDelete(id) {
         if (!(await showConfirm(t('employees.deleteConfirm'), { variant: 'warning' }))) return
         try {
-            const { error } = await supabase.from('employees').delete().eq('id', id)
-            if (error) throw error
+            const res = await fetch(`${API_URL}/employees/${id}`, { method: 'DELETE' })
+            if (!res.ok) throw new Error('Oʻchirishda xatolik')
             await loadEmployees({ silent: true })
         } catch (error) {
             console.error('Error deleting employee:', error)
@@ -785,19 +746,20 @@ export default function Xodimlar() {
                 await loadEmployees({ silent: true })
                 return
             }
-            const cleanNote = salaryForm.note?.trim() || null
-            const { data: insertedSal, error } = await supabase
-                .from('employee_salary_payments')
-                .insert([
-                    {
-                        employee_id: empUuid,
-                        amount: amt,
-                        payment_date: salaryForm.payment_date,
-                        note: cleanNote && cleanNote !== '-' ? cleanNote : null,
-                        source: 'crm'
-                    }
-                ])
-                .select('id, employee_id, amount, payment_date, note, created_at')
+            const { data: insertedSal, error } = await fetch(`${API_URL}/employees/salary`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    employeeId: empUuid,
+                    amount: amt,
+                    date: salaryForm.payment_date,
+                    note: cleanNote && cleanNote !== '-' ? cleanNote : null
+                })
+            }).then(r => r.ok ? r.json() : ({}))
+
+            if (!insertedSal?.id) {
+                throw new Error('Toʻlovni saqlashda xatolik')
+            }
             if (error) {
                 const em = String(error.message || '').toLowerCase()
                 const dup =
@@ -849,27 +811,19 @@ export default function Xodimlar() {
             setAdvanceSaving(true)
             const cleanNote = advanceForm.note?.trim() || null
             const empId = String(advanceModal.employeeId || '').trim()
-            if (!empId) {
-                await showAlert(t('employees.advanceError'), { variant: 'error' })
-                return
-            }
-            const { data: inserted, error } = await supabase
-                .from('employee_advances')
-                .insert([
-                    {
-                        employee_id: empId,
-                        amount: amt,
-                        advance_date: advanceForm.advance_date,
-                        note: cleanNote && cleanNote !== '-' ? cleanNote : null,
-                        source: 'crm'
-                    }
-                ])
-                .select('id, employee_id, amount, advance_date, note')
-            if (error) throw error
-            if (!inserted?.length) {
-                await showAlert(t('employees.advanceInsertNoRow'), { variant: 'error' })
-                return
-            }
+            
+            const res = await fetch(`${API_URL}/employees/advance`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    employeeId: empId,
+                    amount: amt,
+                    date: advanceForm.advance_date,
+                    note: cleanNote && cleanNote !== '-' ? cleanNote : null
+                })
+            })
+            if (!res.ok) throw new Error('Avans saqlashda xatolik')
+            
             await showAlert(t('employees.advanceSaved'), { variant: 'success' })
             closeAdvanceModal()
             await loadEmployees({ silent: true })
@@ -888,20 +842,20 @@ export default function Xodimlar() {
         if (exp <= 0) return null
         if (paid <= 0) {
             return (
-                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                <span className="text-[9px] uppercase tracking-widest font-black px-2.5 py-1 rounded-[1rem] bg-white/5 text-white/40 border border-white/5 w-fit">
                     {t('employees.salaryBadgePending')}
                 </span>
             )
         }
         if (exp > 0 && paid + 0.01 < exp) {
             return (
-                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-200">
+                <span className="text-[9px] uppercase tracking-widest font-black px-2.5 py-1 rounded-[1rem] bg-amber-500/10 text-amber-500 border border-amber-500/20 w-fit">
                     {t('employees.salaryBadgePartial')}
                 </span>
             )
         }
         return (
-            <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+            <span className="text-[9px] uppercase tracking-widest font-black px-2.5 py-1 rounded-[1rem] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 w-fit">
                 {t('employees.salaryBadgePaid')}
             </span>
         )
@@ -1099,8 +1053,8 @@ export default function Xodimlar() {
     if (loading) {
         return (
             <div className="p-8">
-                <div className="flex items-center justify-center h-screen">
-                    <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600"></div>
+                <div className="flex items-center justify-center h-[50vh]">
+                    <div className="animate-spin rounded-[1rem] h-16 w-16 border-[4px] border-b-transparent border-blue-500/50"></div>
                 </div>
             </div>
         )
@@ -1108,19 +1062,35 @@ export default function Xodimlar() {
 
 
     return (
-        <div className="max-w-7xl mx-auto px-6">
-            <Header title={t('common.employees')} toggleSidebar={toggleSidebar} />
+        <div className="min-h-screen text-slate-100 font-sans selection:bg-blue-500/30 overflow-hidden" style={{ fontFamily: "'Inter', sans-serif" }}>
+            {/* CYBER BACKGROUND WITH GRID */}
+            <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+                <div className="absolute inset-0 bg-[#070b14]" />
+                <div className="absolute inset-0 opacity-[0.08]" 
+                    style={{ backgroundImage: `linear-gradient(#ffffff 1px, transparent 1px), linear-gradient(90deg, #ffffff 1px, transparent 1px)`, backgroundSize: '40px 40px' }} 
+                />
+                <div className="absolute top-[-15%] right-[-10%] w-[1000px] h-[1000px] bg-blue-500/30 blur-[150px] rounded-full animate-pulse" />
+                <div className="absolute bottom-[-15%] left-[-10%] w-[900px] h-[900px] bg-purple-500/30 blur-[150px] rounded-full animate-pulse duration-[7s]" />
+            </div>
 
-            <div className="flex flex-col gap-3 mb-4 px-0.5">
+            <div className="w-full h-screen p-4 lg:p-6 relative z-10 flex flex-col items-center">
+                {/* MAIN CONTAINER WITH SOLID NEON BORDER */}
+                <div className="w-full max-w-[1550px] h-full bg-[#0f172a]/70 border border-blue-500/40 rounded-3xl p-4 lg:p-6 shadow-[0_0_60px_rgba(37,99,235,0.15)] backdrop-blur-2xl flex flex-col gap-6 overflow-hidden">
+                    <div className="shrink-0 flex flex-col gap-4">
+                        <Header title={t('common.employees')} toggleSidebar={toggleSidebar} />
+                    </div>
+                    <div className="flex-1 overflow-y-auto no-scrollbar pb-10">
+
+            <div className="flex flex-col gap-3 mb-6 px-0.5">
                 <div className="flex flex-col lg:flex-row lg:flex-wrap lg:items-end gap-3 justify-between">
-                    <p className="text-sm text-gray-500">
-                        <span className="font-medium text-gray-700">{t('employees.statsMonthLabel')}</span>{' '}
-                        <span className="text-gray-800 font-semibold capitalize">{statsMonthLabel}</span>
+                    <p className="text-[11px] text-white/30 uppercase tracking-widest font-bold">
+                        <span className="text-white/50 font-black">{t('employees.statsMonthLabel')}</span>{' '}
+                        <span className="text-white font-black ml-1 uppercase">{statsMonthLabel}</span>
                     </p>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-3">
                         <label
                             htmlFor="report-period-ym"
-                            className="text-xs font-bold text-gray-600 uppercase tracking-wide whitespace-nowrap"
+                            className="text-[10px] font-black text-white/50 uppercase tracking-[0.2em] whitespace-nowrap"
                         >
                             {t('employees.reportPeriodPickerLabel')}
                         </label>
@@ -1132,12 +1102,12 @@ export default function Xodimlar() {
                                 const v = e.target.value
                                 if (v && /^\d{4}-\d{2}$/.test(v)) setReportPeriodYm(v)
                             }}
-                            className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm font-medium text-gray-900"
+                            className="px-4 py-2.5 rounded-[1.5rem] border border-white/5 bg-black/40 text-sm font-bold text-white focus:ring-1 focus:ring-blue-500/50 outline-none transition-all custom-calendar-icon"
                         />
                         <button
                             type="button"
                             onClick={() => setReportPeriodYm(getCurrentYm())}
-                            className="px-3 py-2 rounded-xl text-xs font-bold bg-gray-100 text-gray-800 hover:bg-gray-200 transition-colors"
+                            className="px-4 py-2.5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest bg-white/5 text-white/70 hover:bg-white/10 hover:text-white transition-all border border-transparent shadow-sm"
                         >
                             {t('employees.reportPeriodCurrentMonth')}
                         </button>
@@ -1146,7 +1116,7 @@ export default function Xodimlar() {
                                 <button
                                     type="button"
                                     onClick={() => void executeReopenMonth(reportPeriodYm)}
-                                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-amber-100 text-amber-950 hover:bg-amber-200 transition-colors"
+                                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[1.5rem] text-[10px] uppercase font-black tracking-widest bg-amber-500/10 text-amber-500 hover:bg-amber-500 hover:text-white transition-all border border-amber-500/20"
                                 >
                                     <Unlock size={14} aria-hidden />
                                     {t('employees.payrollReopenMonth')}
@@ -1155,7 +1125,7 @@ export default function Xodimlar() {
                                 <button
                                     type="button"
                                     onClick={() => void executeCloseMonth(reportPeriodYm)}
-                                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-slate-800 text-white hover:bg-slate-900 transition-colors"
+                                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-[1.5rem] text-[10px] uppercase font-black tracking-widest bg-white/10 text-white hover:bg-white/20 transition-all border border-white/5"
                                 >
                                     <Lock size={14} aria-hidden />
                                     {t('employees.payrollCloseMonth')}
@@ -1166,74 +1136,77 @@ export default function Xodimlar() {
                 </div>
                 {isReportMonthClosed ? (
                     <div
-                        className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"
+                        className="rounded-[1.5rem] border border-emerald-500/30 bg-emerald-500/10 px-6 py-4 text-sm text-emerald-400 font-bold glass"
                         role="status"
                     >
-                        <span className="font-semibold capitalize">{statsMonthLabel}</span>
+                        <span className="font-black uppercase tracking-widest">{statsMonthLabel}</span>
                         {' — '}
-                        {t('employees.payrollMonthClosedBanner')}
+                        <span className="opacity-80">{t('employees.payrollMonthClosedBanner')}</span>
                     </div>
                 ) : null}
                 {payrollClosuresTableMissing ? (
                     <div
-                        className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+                        className="rounded-[1.5rem] border border-amber-500/30 bg-amber-500/10 px-6 py-4 text-sm text-amber-400 font-bold glass"
                         role="status"
                     >
-                        {t('employees.payrollClosuresTableMissing')}
+                        <span className="opacity-80 uppercase tracking-widest">{t('employees.payrollClosuresTableMissing')}</span>
                     </div>
                 ) : null}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8">
-                <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white p-6 rounded-2xl shadow-lg shadow-blue-200">
-                    <div className="flex justify-between items-start">
+                <div className="glass rounded-[2rem] p-6 flex flex-col justify-center border-blue-500/20 bg-blue-500/5 relative overflow-hidden group">
+                    <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                    <div className="flex justify-between items-start relative z-10">
                         <div>
-                            <p className="text-sm font-medium text-blue-100">{t('employees.statsCardEmployeesCount')}</p>
-                            <p className="text-xs text-blue-100/85 mt-0.5">{t('employees.statsCardEmployeesHint')}</p>
-                            <p className="text-3xl font-bold mt-2 tabular-nums">{employees.length}</p>
+                            <p className="text-[10px] font-black tracking-widest uppercase text-blue-500/70">{t('employees.statsCardEmployeesCount')}</p>
+                            <p className="text-[9px] text-blue-500/40 mt-1 uppercase tracking-wider">{t('employees.statsCardEmployeesHint')}</p>
+                            <p className="text-3xl font-black mt-3 tabular-nums text-blue-400">{employees.length}</p>
                         </div>
-                        <div className="p-3 bg-white/20 rounded-xl">
-                            <Users className="text-white" size={24} />
+                        <div className="p-3 bg-blue-500/10 rounded-2xl shrink-0 ring-1 ring-blue-500/30">
+                            <Users className="text-blue-500" size={24} />
                         </div>
                     </div>
                 </div>
-                <div className="bg-gradient-to-br from-amber-500 to-orange-600 text-white p-6 rounded-xl shadow-lg shadow-amber-200/80">
-                    <div className="flex justify-between items-start gap-3">
+                <div className="glass rounded-[2rem] p-6 flex flex-col justify-center border-amber-500/20 bg-amber-500/5 relative overflow-hidden group">
+                    <div className="absolute inset-0 bg-gradient-to-br from-amber-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                    <div className="flex justify-between items-start gap-3 relative z-10">
                         <div className="min-w-0">
-                            <p className="text-sm font-medium text-amber-50">{t('employees.statsCardAdvancesTotal')}</p>
-                            <p className="text-xs text-amber-100/90 mt-0.5">{t('employees.statsCardAdvancesHint')}</p>
-                            <p className="text-2xl sm:text-3xl font-bold mt-2 tabular-nums">
+                            <p className="text-[10px] font-black tracking-widest uppercase text-amber-500/70">{t('employees.statsCardAdvancesTotal')}</p>
+                            <p className="text-[9px] text-amber-500/40 mt-1 uppercase tracking-wider">{t('employees.statsCardAdvancesHint')}</p>
+                            <p className="text-3xl font-black mt-3 tabular-nums text-amber-400">
                                 {formatUzs(monthAdvancesNetDisplay)}
                             </p>
                         </div>
-                        <div className="p-3 bg-white/20 rounded-xl shrink-0">
-                            <Wallet className="text-white" size={24} aria-hidden />
+                        <div className="p-3 bg-amber-500/10 rounded-2xl shrink-0 ring-1 ring-amber-500/30">
+                            <Wallet className="text-amber-500" size={24} aria-hidden />
                         </div>
                     </div>
                 </div>
-                <div className="bg-gradient-to-br from-emerald-600 to-teal-800 text-white p-6 rounded-xl shadow-lg shadow-emerald-200/80">
-                    <div className="flex justify-between items-start gap-3">
+                <div className="glass rounded-[2rem] p-6 flex flex-col justify-center border-emerald-500/20 bg-emerald-500/5 relative overflow-hidden group">
+                    <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                    <div className="flex justify-between items-start gap-3 relative z-10">
                         <div className="min-w-0">
-                            <p className="text-sm font-medium text-emerald-50">{t('employees.statsCardSalaryClosedTotal')}</p>
-                            <p className="text-xs text-emerald-100/90 mt-0.5">{t('employees.statsCardSalaryClosedHint')}</p>
-                            <p className="text-2xl sm:text-3xl font-bold mt-2 tabular-nums">
+                            <p className="text-[10px] font-black tracking-widest uppercase text-emerald-500/70">{t('employees.statsCardSalaryClosedTotal')}</p>
+                            <p className="text-[9px] text-emerald-500/40 mt-1 uppercase tracking-wider">{t('employees.statsCardSalaryClosedHint')}</p>
+                            <p className="text-3xl font-black mt-3 tabular-nums text-emerald-400">
                                 {salaryPaymentsTableMissing ? '—' : formatUzs(monthSalaryPaidGrandTotalRaw)}
                             </p>
                         </div>
-                        <div className="p-3 bg-white/20 rounded-xl shrink-0">
-                            <Banknote className="text-white" size={24} aria-hidden />
+                        <div className="p-3 bg-emerald-500/10 rounded-2xl shrink-0 ring-1 ring-emerald-500/30">
+                            <Banknote className="text-emerald-500" size={24} aria-hidden />
                         </div>
                     </div>
                 </div>
             </div>
 
-            <div className="mb-8 rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-50 to-emerald-50/30 px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shadow-sm">
+            <div className="mb-8 rounded-[2rem] glass border border-white/5 bg-white/[0.02] px-8 py-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div className="min-w-0">
-                    <p className="text-xs font-bold uppercase tracking-wide text-slate-600">
+                    <p className="text-[11px] font-black uppercase tracking-[0.2em] text-white/50">
                         {t('employees.monthTotalPaidOutCard')}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">{t('employees.monthTotalPaidOutHint')}</p>
+                    <p className="text-[10px] text-white/30 uppercase tracking-widest mt-1 font-bold">{t('employees.monthTotalPaidOutHint')}</p>
                 </div>
-                <p className="text-2xl font-bold tabular-nums text-slate-900 shrink-0">
+                <p className="text-3xl font-black tabular-nums text-white shrink-0 neon-text">
                     {formatUzs(monthTotalPaidOutGrandTotal)}
                 </p>
             </div>
@@ -1262,184 +1235,194 @@ export default function Xodimlar() {
                     <span className="font-semibold">{t('employees.advancesLoadErrorTitle')}</span> {advancesLoadError}
                 </div>
             ) : null}
-            <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-8 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-8 glass rounded-[2rem] p-4">
                 <div className="relative w-full md:w-96">
-                    <Search className="absolute left-4 top-3.5 text-gray-400" size={20} />
+                    <Search className="absolute left-6 top-3.5 text-white/30" size={18} />
                     <input
                         type="text"
                         placeholder={t('employees.searchPlaceholder')}
-                        className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-transparent focus:bg-white focus:border-blue-500 rounded-xl outline-none transition-all"
+                        className="w-full pl-14 pr-6 py-3 bg-black/20 border border-white/5 focus:bg-black/40 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/30 rounded-[1.5rem] outline-none transition-all text-white placeholder-white/20 text-sm font-bold"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                     />
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
                     <button
                         type="button"
                         onClick={() => void printEmployeesPayrollTable()}
-                        className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-800 px-4 py-3 rounded-xl transition-all border border-slate-200 font-bold"
+                        className="flex items-center gap-3 bg-white/5 hover:bg-white/10 text-white/60 hover:text-white px-6 py-3 rounded-[1.5rem] transition-all border border-white/5 text-[11px] font-black uppercase tracking-widest"
                     >
-                        <Printer size={18} />
+                        <Printer size={16} />
                         <span className="hidden sm:inline">{t('common.print')}</span>
                     </button>
                     <button
                         onClick={() => setIsAdding(!isAdding)}
-                        className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl transition-all shadow-lg shadow-blue-600/30 font-bold"
+                        className={`flex items-center gap-3 px-8 py-3 rounded-[1.5rem] transition-all text-[11px] font-black uppercase tracking-widest ${
+                            isAdding
+                                ? 'bg-white/5 text-white/60 hover:text-white border border-white/5'
+                                : 'bg-blue-600 text-white shadow-xl shadow-blue-600/20 hover:bg-blue-500'
+                        }`}
                     >
-                        {isAdding ? <X size={20} /> : <UserPlus size={20} />}
+                        {isAdding ? <X size={16} /> : <UserPlus size={16} />}
                         <span className="hidden sm:inline">{isAdding ? t('common.cancel') : t('employees.addEmployee')}</span>
                     </button>
                 </div>
             </div>
 
             {isAdding && (
-                <div className="bg-white p-6 rounded-2xl shadow-md border border-gray-100 mb-8 fade-in">
-                    <h3 className="text-xl font-bold text-gray-800 mb-6">
-                        {editId ? t('employees.editEmployee') : t('employees.addEmployeeTitle')}
-                    </h3>
-                    <form onSubmit={handleSubmit}>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
-                            <div className="space-y-2">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.nameLabel')}</label>
-                                <input
-                                    type="text"
-                                    placeholder={t('employees.name')}
-                                    value={form.name}
-                                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                    required
-                                />
+                <div className="glass rounded-[2.5rem] px-8 py-8 mb-8 fade-in relative overflow-hidden group">
+                    <div className="absolute inset-0 bg-gradient-to-b from-blue-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                    <div className="relative z-10">
+                        <h3 className="text-xl font-black text-white uppercase tracking-wider mb-8 flex items-center gap-3">
+                            <span className="w-8 h-8 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0 ring-1 ring-blue-500/30">
+                                <UserPlus size={16} />
+                            </span>
+                            {editId ? t('employees.editEmployee') : t('employees.addEmployeeTitle')}
+                        </h3>
+                        <form onSubmit={handleSubmit}>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+                                <div className="space-y-2">
+                                    <label className="block text-[10px] uppercase font-black tracking-[0.15em] text-white/50 ml-2">{t('employees.nameLabel')}</label>
+                                    <input
+                                        type="text"
+                                        placeholder={t('employees.name')}
+                                        value={form.name}
+                                        onChange={(e) => setForm({ ...form, name: e.target.value })}
+                                        className="w-full px-6 py-4 bg-black/20 border border-white/5 rounded-[1.5rem] focus:bg-black/40 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/30 outline-none transition-all text-white placeholder-white/20 text-sm font-bold"
+                                        required
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="block text-[10px] uppercase font-black tracking-[0.15em] text-white/50 ml-2">{t('employees.positionLabel')}</label>
+                                    <input
+                                        type="text"
+                                        placeholder={t('employees.position')}
+                                        value={form.position}
+                                        onChange={(e) => setForm({ ...form, position: e.target.value })}
+                                        className="w-full px-6 py-4 bg-black/20 border border-white/5 rounded-[1.5rem] focus:bg-black/40 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/30 outline-none transition-all text-white placeholder-white/20 text-sm font-bold"
+                                        required
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="block text-[10px] uppercase font-black tracking-[0.15em] text-white/50 ml-2">{t('employees.salaryLabel')}</label>
+                                    <input
+                                        type="number"
+                                        placeholder={t('employees.salaryPlaceholder')}
+                                        value={form.monthly_salary}
+                                        onChange={(e) => setForm({ ...form, monthly_salary: e.target.value })}
+                                        className="w-full px-6 py-4 bg-black/20 border border-white/5 rounded-[1.5rem] focus:bg-black/40 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/30 outline-none transition-all text-white placeholder-white/20 text-sm font-bold font-mono"
+                                        required
+                                        min="0"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="block text-[10px] uppercase font-black tracking-[0.15em] text-white/50 ml-2">{t('employees.bonus')}</label>
+                                    <input
+                                        type="number"
+                                        placeholder={t('employees.bonusPlaceholder')}
+                                        value={form.bonus_percent}
+                                        onChange={(e) => setForm({ ...form, bonus_percent: e.target.value })}
+                                        className="w-full px-6 py-4 bg-black/20 border border-white/5 rounded-[1.5rem] focus:bg-black/40 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/30 outline-none transition-all text-white placeholder-white/20 text-sm font-bold font-mono"
+                                        min="0"
+                                    />
+                                </div>
+                                <div className="space-y-2 md:col-span-2 lg:col-span-3">
+                                    <label className="block text-[10px] uppercase font-black tracking-[0.15em] text-white/50 ml-2">{t('employees.phoneLabel')}</label>
+                                    <input
+                                        type="tel"
+                                        autoComplete="tel"
+                                        placeholder={t('employees.phonePlaceholder')}
+                                        value={form.phone}
+                                        onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                                        className="w-full px-6 py-4 bg-black/20 border border-white/5 rounded-[1.5rem] focus:bg-black/40 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/30 outline-none transition-all text-white placeholder-white/20 text-sm font-bold font-mono"
+                                    />
+                                </div>
+                                <div className="md:col-span-2 lg:col-span-3">
+                                    <p className="text-[10px] text-white/30 uppercase tracking-widest font-bold leading-relaxed ml-2">{scheduleHintText}</p>
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="block text-[10px] uppercase font-black tracking-[0.15em] text-white/50 ml-2">{t('employees.workedDays')}</label>
+                                    <input
+                                        type="number"
+                                        placeholder="0"
+                                        value={form.worked_days}
+                                        onChange={(e) => onWorkedDaysChange(e.target.value)}
+                                        className="w-full px-6 py-4 bg-black/20 border border-white/5 rounded-[1.5rem] focus:bg-black/40 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/30 outline-none transition-all text-white placeholder-white/20 text-sm font-bold font-mono"
+                                        min="0"
+                                        max="31"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="block text-[10px] uppercase font-black tracking-[0.15em] text-white/50 ml-2">{t('employees.restDays')}</label>
+                                    <input
+                                        type="number"
+                                        placeholder="0"
+                                        value={form.rest_days}
+                                        onChange={(e) => onRestDaysChange(e.target.value)}
+                                        className="w-full px-6 py-4 bg-black/20 border border-white/5 rounded-[1.5rem] focus:bg-black/40 focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/30 outline-none transition-all text-white placeholder-white/20 text-sm font-bold font-mono"
+                                        min="0"
+                                        max={String(MONTHLY_REST_DAYS_LIMIT)}
+                                    />
+                                </div>
                             </div>
-                            <div className="space-y-2">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.positionLabel')}</label>
-                                <input
-                                    type="text"
-                                    placeholder={t('employees.position')}
-                                    value={form.position}
-                                    onChange={(e) => setForm({ ...form, position: e.target.value })}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                    required
-                                />
+                            <div className="flex justify-end gap-3 pt-6 border-t border-white/5">
+                                <button
+                                    type="button"
+                                    onClick={handleCancel}
+                                    className="px-8 py-3.5 rounded-[1.5rem] text-[11px] font-black uppercase tracking-widest text-white/50 hover:bg-white/5 hover:text-white transition-all border border-transparent"
+                                >
+                                    {t('common.cancel')}
+                                </button>
+                                <button
+                                    type="submit"
+                                    className="flex items-center gap-2 bg-blue-600 text-white px-8 py-3.5 rounded-[1.5rem] hover:bg-blue-500 hover:-translate-y-0.5 active:translate-y-0 shadow-xl shadow-blue-600/30 font-black uppercase tracking-widest text-[11px] transition-all"
+                                >
+                                    <Save size={16} />
+                                    {t('common.save')}
+                                </button>
                             </div>
-                            <div className="space-y-2">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.salaryLabel')}</label>
-                                <input
-                                    type="number"
-                                    placeholder={t('employees.salaryPlaceholder')}
-                                    value={form.monthly_salary}
-                                    onChange={(e) => setForm({ ...form, monthly_salary: e.target.value })}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                    required
-                                    min="0"
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.bonus')}</label>
-                                <input
-                                    type="number"
-                                    placeholder={t('employees.bonusPlaceholder')}
-                                    value={form.bonus_percent}
-                                    onChange={(e) => setForm({ ...form, bonus_percent: e.target.value })}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                    min="0"
-                                />
-                            </div>
-                            <div className="space-y-2 md:col-span-2 lg:col-span-3">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.phoneLabel')}</label>
-                                <input
-                                    type="tel"
-                                    autoComplete="tel"
-                                    placeholder={t('employees.phonePlaceholder')}
-                                    value={form.phone}
-                                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all font-mono text-sm"
-                                />
-                            </div>
-                            <div className="md:col-span-2 lg:col-span-3">
-                                <p className="text-xs text-gray-500 leading-relaxed">{scheduleHintText}</p>
-                            </div>
-                            <div className="space-y-2">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.workedDays')}</label>
-                                <input
-                                    type="number"
-                                    placeholder="0"
-                                    value={form.worked_days}
-                                    onChange={(e) => onWorkedDaysChange(e.target.value)}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                    min="0"
-                                    max="31"
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.restDays')}</label>
-                                <input
-                                    type="number"
-                                    placeholder="0"
-                                    value={form.rest_days}
-                                    onChange={(e) => onRestDaysChange(e.target.value)}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-                                    min="0"
-                                    max={String(MONTHLY_REST_DAYS_LIMIT)}
-                                />
-                            </div>
-                        </div>
-                        <div className="flex justify-end gap-3">
-                            <button
-                                type="button"
-                                onClick={handleCancel}
-                                className="px-6 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-100 transition-colors"
-                            >
-                                {t('common.cancel')}
-                            </button>
-                            <button
-                                type="submit"
-                                className="flex items-center gap-2 bg-blue-600 text-white px-8 py-3 rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-600/30 font-bold transition-all"
-                            >
-                                <Save size={20} />
-                                {t('common.save')}
-                            </button>
-                        </div>
-                    </form>
+                        </form>
+                    </div>
                 </div>
             )}
 
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="glass rounded-[2.5rem] overflow-hidden">
                 {filteredEmployees.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-                        <Users size={48} className="mb-4 opacity-20" />
-                        <p className="font-medium text-lg">{t('employees.noEmployees')}</p>
+                    <div className="flex flex-col items-center justify-center py-24 text-white/20">
+                        <Users size={64} className="mb-6 opacity-40 shrink-0 mx-auto" />
+                        <p className="font-black text-sm uppercase tracking-widest">{t('employees.noEmployees')}</p>
                     </div>
                 ) : (
-                    <div className="overflow-x-auto overscroll-x-contain">
-                        <table className="w-full min-w-[50rem] text-left border-separate border-spacing-0">
-                            <thead className="text-xs uppercase tracking-wider text-gray-500 font-bold">
-                                <tr>
-                                    <th className="sticky left-0 z-30 bg-gray-50 px-2 py-3 text-left align-bottom rounded-tl-2xl border-b border-gray-100 shadow-[4px_0_12px_-6px_rgba(15,23,42,0.12)] w-[11rem] min-w-[11rem] max-w-[11rem]">
+                    <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full min-w-[70rem] text-left">
+                            <thead className="bg-[#0f172a] text-[10px] font-black uppercase tracking-[0.2em] text-white/30 border-y border-white/10">
+                                <tr className="border-b border-white/5">
+                                    <th className="sticky left-0 z-30 bg-[#0f172a] px-6 py-6 text-left align-middle w-[13rem] min-w-[13rem] max-w-[13rem] shadow-[4px_0_12px_-6px_rgba(0,0,0,0.5)]">
                                         {t('employees.name')}
                                     </th>
-                                    <th className="sticky left-[11rem] z-30 bg-gray-50 px-2 py-3 text-left align-bottom border-b border-gray-100 shadow-[4px_0_12px_-6px_rgba(15,23,42,0.12)] w-[8.5rem] min-w-[8.5rem] max-w-[8.5rem]">
+                                    <th className="sticky left-[13rem] z-30 bg-[#0f172a] px-6 py-6 text-left align-middle w-[11rem] min-w-[11rem] max-w-[11rem] shadow-[4px_0_12px_-6px_rgba(0,0,0,0.5)]">
                                         {t('employees.position')}
                                     </th>
-                                    <th className="bg-gray-50 px-3 py-3 align-bottom border-b border-gray-100 min-w-[15rem] max-w-[26rem]">
-                                        <span className="block normal-case">{t('employees.operationsColumnTitle')}</span>
-                                        <span className="block font-normal normal-case text-[10px] text-gray-400 mt-0.5 leading-tight">
+                                    <th className="px-6 py-6 align-middle min-w-[20rem] max-w-[32rem]">
+                                        <span className="block">{t('employees.operationsColumnTitle')}</span>
+                                        <span className="block font-bold text-[9px] text-white/20 mt-1 uppercase tracking-widest">
                                             {t('employees.operationsColumnSub')}
                                         </span>
                                     </th>
-                                    <th className="sticky right-[3.5rem] z-30 bg-gray-50 px-1 py-2 text-center align-bottom border-b border-gray-100 border-l border-gray-200/80 w-14 min-w-[3.5rem] shadow-[-6px_0_14px_-6px_rgba(15,23,42,0.1)]">
-                                        <span className="block normal-case text-[10px] leading-tight text-gray-600 font-bold">
+                                    <th className="sticky right-[4.5rem] z-30 bg-[#0f172a] px-2 py-6 text-center align-middle w-16 min-w-[4rem] shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.5)]">
+                                        <span className="block text-[9px] tracking-widest text-white/20 font-black">
                                             {t('employees.tableColEditShort')}
                                         </span>
                                     </th>
-                                    <th className="sticky right-0 z-30 bg-gray-50 px-1 py-2 text-center align-bottom rounded-tr-2xl border-b border-gray-100 border-l border-gray-200/80 w-14 min-w-[3.5rem] shadow-[-6px_0_14px_-6px_rgba(15,23,42,0.1)]">
-                                        <span className="block normal-case text-[10px] leading-tight text-gray-600 font-bold">
+                                    <th className="sticky right-0 z-30 bg-[#0f172a] px-2 py-6 text-center align-middle w-16 min-w-[4rem] shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.5)]">
+                                        <span className="block text-[9px] tracking-widest text-white/20 font-black">
                                             {t('employees.tableColDeleteShort')}
                                         </span>
                                     </th>
                                 </tr>
                             </thead>
-                            <tbody>
+                            <tbody className="divide-y divide-white/5">
                                 {filteredEmployees.map((xodim) => {
                                     const empKey = employeeMapKey(xodim.id)
                                     const approvedLeaveDates = approvedLeaveDatesByEmployee[empKey] || []
@@ -1459,19 +1442,20 @@ export default function Xodimlar() {
                                         rowHasPayrollContext &&
                                         salaryCloseAutoAmountForEmployee(xodim) < 0.01
                                     return (
-                                        <tr key={xodim.id} className="group transition-colors">
-                                            <td className="sticky left-0 z-20 bg-white group-hover:bg-blue-50/50 px-2 py-3 align-top border-b border-gray-100 shadow-[4px_0_12px_-6px_rgba(15,23,42,0.06)] w-[11rem] min-w-[11rem] max-w-[11rem]">
-                                                <div className="flex flex-col gap-1.5 min-w-0">
-                                                    <span className="font-bold text-gray-900 break-words leading-snug">{xodim.name}</span>
+                                        <tr key={xodim.id} className="group transition-colors hover:bg-white/[0.02]">
+                                            <td className="sticky left-0 z-20 bg-transparent group-hover:bg-[#1a2333]/90 backdrop-blur-md px-6 py-6 align-top border-b border-white/5 shadow-[4px_0_12px_-6px_rgba(0,0,0,0.5)] w-[13rem] min-w-[13rem] max-w-[13rem] relative transition-colors">
+                                                <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-blue-500/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                                                <div className="flex flex-col gap-2 min-w-0">
+                                                    <span className="font-black text-white/90 break-words leading-snug">{xodim.name}</span>
                                                     {xodim.phone ? (
-                                                        <span className="text-[11px] font-mono text-gray-500">{xodim.phone}</span>
+                                                        <span className="text-[11px] font-mono font-bold text-white/40">{xodim.phone}</span>
                                                     ) : null}
                                                     {approvedVisibleDates.length > 0 ? (
-                                                        <div className="text-[10px] text-gray-600 leading-snug">
-                                                            <span className="text-gray-500">
+                                                        <div className="text-[10px] text-white/30 leading-snug font-bold">
+                                                            <span className="opacity-70">
                                                                 {t('employees.approvedLeaveDatesLabel')}{' '}
                                                             </span>
-                                                            <span className="font-mono tabular-nums">
+                                                            <span className="font-mono tabular-nums text-emerald-400/80">
                                                                 {approvedVisibleDates.join(', ')}
                                                             </span>
                                                         </div>
@@ -1479,18 +1463,18 @@ export default function Xodimlar() {
                                                     {salaryStatusBadge(contractTotal, advSum + salSum)}
                                                 </div>
                                             </td>
-                                            <td className="sticky left-[11rem] z-20 bg-white group-hover:bg-blue-50/50 px-2 py-3 align-top border-b border-gray-100 shadow-[4px_0_12px_-6px_rgba(15,23,42,0.06)] w-[8.5rem] min-w-[8.5rem] max-w-[8.5rem]">
-                                                <span className="text-[12px] text-gray-800 break-words leading-snug font-medium line-clamp-4">
+                                            <td className="sticky left-[13rem] z-20 bg-transparent group-hover:bg-[#1a2333]/90 backdrop-blur-md px-6 py-6 align-top border-b border-white/5 shadow-[4px_0_12px_-6px_rgba(0,0,0,0.5)] w-[11rem] min-w-[11rem] max-w-[11rem] transition-colors">
+                                                <span className="text-[12px] text-white/60 break-words leading-snug font-bold line-clamp-4">
                                                     {xodim.position}
                                                 </span>
                                             </td>
-                                            <td className="px-3 py-3 align-top border-b border-gray-100 bg-white group-hover:bg-blue-50/50 min-w-[15rem] max-w-[26rem]">
-                                                <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs tabular-nums">
+                                            <td className="px-6 py-6 align-top border-b border-white/5 min-w-[20rem] max-w-[32rem]">
+                                                <div className="mb-4 rounded-2xl border border-white/5 bg-white/[0.02] px-4 py-3 text-xs tabular-nums text-white max-w-sm">
                                                     <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-                                                        <span className="text-gray-600 font-semibold">
+                                                        <span className="text-white/40 font-black uppercase tracking-widest text-[9px]">
                                                             {t('employees.rowTotalPaidOutLabel')}
                                                         </span>
-                                                        <span className="font-bold text-slate-900 text-sm">
+                                                        <span className="font-black text-white text-sm neon-text">
                                                             {formatUzs(
                                                                 salaryPaymentsTableMissing
                                                                     ? advSum
@@ -1499,7 +1483,7 @@ export default function Xodimlar() {
                                                         </span>
                                                     </div>
                                                 </div>
-                                                <div className="flex flex-wrap items-center gap-2 mb-2">
+                                                <div className="flex flex-wrap items-center gap-3 mb-3">
                                                     <button
                                                         type="button"
                                                         disabled={
@@ -1507,7 +1491,7 @@ export default function Xodimlar() {
                                                             advancesTableMissing
                                                         }
                                                         onClick={() => void openAdvanceModal(xodim)}
-                                                        className="inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-[11px] font-bold leading-snug bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 disabled:pointer-events-none shadow-sm whitespace-nowrap"
+                                                        className="inline-flex items-center justify-center gap-2 py-2 px-4 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest leading-snug bg-amber-500/10 text-amber-500 hover:bg-amber-500 hover:text-white border border-amber-500/20 disabled:opacity-30 disabled:pointer-events-none transition-all whitespace-nowrap"
                                                         title={
                                                             closedPeriodYms.includes(reportPeriodYm)
                                                                 ? t('employees.payrollMonthClosedNoNewRows')
@@ -1516,7 +1500,7 @@ export default function Xodimlar() {
                                                                   : t('employees.rowGiveCashTitle')
                                                         }
                                                     >
-                                                        <Wallet className="shrink-0 opacity-95" size={14} aria-hidden />
+                                                        <Wallet size={14} aria-hidden />
                                                         {t('employees.rowGiveCashShort')}
                                                     </button>
                                                     <button
@@ -1526,7 +1510,7 @@ export default function Xodimlar() {
                                                             salaryPaymentsTableMissing
                                                         }
                                                         onClick={() => void openSalaryModal(xodim)}
-                                                        className="inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-[11px] font-bold leading-snug bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:pointer-events-none shadow-sm whitespace-nowrap"
+                                                        className="inline-flex items-center justify-center gap-2 py-2 px-4 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest leading-snug bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500 hover:text-white border border-emerald-500/20 disabled:opacity-30 disabled:pointer-events-none transition-all whitespace-nowrap"
                                                         title={
                                                             closedPeriodYms.includes(reportPeriodYm)
                                                                 ? t('employees.payrollMonthClosedNoNewRows')
@@ -1535,17 +1519,17 @@ export default function Xodimlar() {
                                                                   : t('employees.rowCloseSalaryTitle')
                                                         }
                                                     >
-                                                        <Banknote className="shrink-0 opacity-95" size={14} aria-hidden />
+                                                        <Banknote size={14} aria-hidden />
                                                         {t('employees.rowCloseSalaryShort')}
                                                     </button>
                                                     {salaryCloseDoneThisMonth ? (
                                                         <span
-                                                            className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[10px] font-bold leading-tight text-emerald-900 shadow-sm"
+                                                            className="inline-flex items-center gap-1.5 rounded-[1.5rem] border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[9px] font-black uppercase tracking-wider leading-tight text-emerald-400"
                                                             title={t('employees.rowSalaryClosedThisMonthTitle')}
                                                             role="status"
                                                         >
                                                             <CheckCircle2
-                                                                className="shrink-0 text-emerald-600"
+                                                                className="shrink-0 text-emerald-400"
                                                                 size={14}
                                                                 aria-hidden
                                                             />
@@ -1553,15 +1537,15 @@ export default function Xodimlar() {
                                                         </span>
                                                     ) : null}
                                                 </div>
-                                                <p className="text-[9px] text-gray-500 leading-snug mb-2">
+                                                <p className="text-[9px] text-white/20 uppercase tracking-widest font-bold leading-snug mb-3">
                                                     {t('employees.rowStatsLinkHint')}
                                                 </p>
-                                                <div className="flex flex-wrap gap-2 mb-2">
+                                                <div className="flex flex-wrap gap-4 mb-4">
                                                     {!advancesTableMissing && advList.length > 1 ? (
                                                         <button
                                                             type="button"
                                                             onClick={() => openDeleteAllAdvancesPeriod(xodim, advList)}
-                                                            className="text-[11px] font-bold text-red-700 hover:text-red-900 hover:underline"
+                                                            className="text-[10px] font-black text-rose-500/70 hover:text-rose-400 uppercase tracking-widest"
                                                         >
                                                             {t('employees.deleteAllAdvancesThisMonth')}
                                                         </button>
@@ -1570,14 +1554,14 @@ export default function Xodimlar() {
                                                         <button
                                                             type="button"
                                                             onClick={() => openDeleteAllSalaryPaymentsPeriod(xodim, salList)}
-                                                            className="text-[11px] font-bold text-red-700 hover:text-red-900 hover:underline"
+                                                            className="text-[10px] font-black text-rose-500/70 hover:text-rose-400 uppercase tracking-widest"
                                                         >
                                                             {t('employees.deleteAllSalaryPaymentsThisMonth')}
                                                         </button>
                                                     ) : null}
                                                 </div>
                                                 {payoutTimeline.length > 0 ? (
-                                                    <ol className="space-y-2 text-xs text-gray-700 font-normal list-none pl-0">
+                                                    <ol className="space-y-2 text-[11px] font-bold list-none pl-0">
                                                         {payoutTimeline.map((item, idx) => (
                                                             <li
                                                                 key={
@@ -1585,30 +1569,30 @@ export default function Xodimlar() {
                                                                         ? `a-${item.raw?.id || `${item.sortKey}-${item.amount}-${idx}`}`
                                                                         : `s-${item.raw?.id || `${item.sortKey}-${item.amount}-${idx}`}`
                                                                 }
-                                                                className="tabular-nums rounded-lg border border-gray-100 bg-gray-50/60 px-2 py-2"
+                                                                className="tabular-nums rounded-2xl border border-white/5 bg-black/20 px-3 py-3 max-w-md group/item hover:border-white/10 transition-colors"
                                                             >
                                                                 <div className="flex flex-wrap items-start gap-2">
-                                                                    <span className="shrink-0 w-5 text-[10px] font-bold text-gray-400 pt-0.5">
+                                                                    <span className="shrink-0 w-5 text-[9px] font-black text-white/20 pt-0.5 mt-0.5">
                                                                         {idx + 1}.
                                                                     </span>
                                                                     <div className="min-w-0 flex-1">
                                                                         <div className="flex flex-wrap items-center gap-1.5 gap-y-1">
-                                                                            <span className="text-gray-500">
+                                                                            <span className="text-white/40 font-mono">
                                                                                 {formatAdvanceDate(item.displayDate)}
                                                                             </span>
-                                                                            <span className="text-gray-400">—</span>
-                                                                            <span className="font-semibold text-gray-900">
+                                                                            <span className="text-white/20">—</span>
+                                                                            <span className="font-black text-white/80">
                                                                                 {formatUzs(item.amount)}
                                                                             </span>
                                                                         </div>
                                                                         {item.note ? (
-                                                                            <div className="text-[11px] text-gray-500 mt-1 max-w-[14rem] leading-snug">
-                                                                                {t('employees.expenseNotePrefix')}
+                                                                            <div className="text-[10px] text-white/40 mt-1.5 leading-snug">
+                                                                                <span className="opacity-50">{t('employees.expenseNotePrefix')}</span>{' '}
                                                                                 {item.note}
                                                                             </div>
                                                                         ) : null}
                                                                     </div>
-                                                                    <div className="shrink-0 flex flex-wrap items-center justify-end gap-1">
+                                                                    <div className="shrink-0 flex flex-wrap items-center justify-end gap-1 opacity-0 group-hover/item:opacity-100 transition-opacity">
                                                                         {item.kind === 'advance' &&
                                                                         !advancesTableMissing &&
                                                                         item.raw?.id ? (
@@ -1617,7 +1601,7 @@ export default function Xodimlar() {
                                                                                 onClick={() =>
                                                                                     openDeleteAdvance(item.raw, xodim.name)
                                                                                 }
-                                                                                className="shrink-0 p-1 rounded-md text-red-600 hover:bg-red-50"
+                                                                                className="shrink-0 p-1.5 rounded-xl text-rose-500 hover:bg-rose-500/10"
                                                                                 title={t('employees.deleteOneAdvance')}
                                                                             >
                                                                                 <Trash2 size={14} aria-hidden />
@@ -1629,7 +1613,7 @@ export default function Xodimlar() {
                                                                                 onClick={() =>
                                                                                     openDeleteSalaryPayment(item.raw, xodim.name)
                                                                                 }
-                                                                                className="shrink-0 p-1 rounded-md text-red-600 hover:bg-red-50"
+                                                                                className="shrink-0 p-1.5 rounded-xl text-rose-500 hover:bg-rose-500/10"
                                                                                 title={t('employees.deleteOneSalaryPayment')}
                                                                             >
                                                                                 <Trash2 size={14} aria-hidden />
@@ -1641,30 +1625,30 @@ export default function Xodimlar() {
                                                         ))}
                                                     </ol>
                                                 ) : (
-                                                    <p className="text-xs text-gray-400">{t('employees.noPayoutsThisMonth')}</p>
+                                                    <p className="text-[10px] font-black uppercase tracking-widest text-white/20">{t('employees.noPayoutsThisMonth')}</p>
                                                 )}
                                             </td>
-                                            <td className="sticky right-[3.5rem] z-20 bg-white group-hover:bg-blue-50/50 px-0 py-3 align-middle border-b border-gray-100 border-l border-gray-200/80 w-14 min-w-[3.5rem] shadow-[-6px_0_14px_-6px_rgba(15,23,42,0.06)]">
+                                            <td className="sticky right-[4.5rem] z-20 bg-transparent group-hover:bg-[#1a2333]/90 backdrop-blur-md px-0 py-3 align-middle border-b border-white/5 border-l border-white/5 w-16 min-w-[4rem] shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.5)] transition-colors">
                                                 <div className="flex justify-center items-center">
                                                     <button
                                                         type="button"
                                                         onClick={() => handleEdit(xodim)}
-                                                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                                        className="p-3 text-blue-400 hover:bg-blue-500/10 rounded-xl transition-all"
                                                         title={t('employees.editEmployee')}
                                                     >
-                                                        <Edit size={20} aria-hidden />
+                                                        <Edit size={18} aria-hidden />
                                                     </button>
                                                 </div>
                                             </td>
-                                            <td className="sticky right-0 z-20 bg-white group-hover:bg-blue-50/50 px-0 py-3 align-middle border-b border-gray-100 border-l border-gray-200/80 w-14 min-w-[3.5rem] shadow-[-6px_0_14px_-6px_rgba(15,23,42,0.06)]">
+                                            <td className="sticky right-0 z-20 bg-transparent group-hover:bg-[#1a2333]/90 backdrop-blur-md px-0 py-3 align-middle border-b border-white/5 w-16 min-w-[4rem] shadow-[-6px_0_14px_-6px_rgba(0,0,0,0.5)] transition-colors">
                                                 <div className="flex justify-center items-center">
                                                     <button
                                                         type="button"
                                                         onClick={() => void handleDelete(xodim.id)}
-                                                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                                        className="p-3 text-rose-400 hover:bg-rose-500/10 rounded-xl transition-all"
                                                         title={t('common.delete')}
                                                     >
-                                                        <Trash2 size={20} aria-hidden />
+                                                        <Trash2 size={18} aria-hidden />
                                                     </button>
                                                 </div>
                                             </td>
@@ -1679,7 +1663,7 @@ export default function Xodimlar() {
 
             {salaryOverviewModal && salaryOverviewPayoutContext ? (
                 <div
-                    className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-[2px]"
+                    className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby="salary-overview-title"
@@ -1688,60 +1672,60 @@ export default function Xodimlar() {
                     }}
                 >
                     <div
-                        className="relative w-full max-w-lg max-h-[min(92vh,720px)] flex flex-col rounded-2xl border border-gray-100 bg-white shadow-2xl"
+                        className="relative w-full max-w-lg max-h-[min(92vh,720px)] flex flex-col rounded-[2.5rem] border border-white/10 bg-[#0f172a]/95 shadow-[0_0_60px_rgba(16,185,129,0.15)] overflow-hidden"
                         onClick={(e) => e.stopPropagation()}
                     >
                         <button
                             type="button"
                             onClick={closeSalaryOverviewModal}
-                            className="absolute right-4 top-4 rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 z-10"
+                            className="absolute right-6 top-6 rounded-xl p-2 text-white/40 hover:bg-white/10 hover:text-white transition-all z-10"
                             aria-label={t('common.close')}
                         >
                             <X size={20} />
                         </button>
-                        <div className="px-6 pt-6 pb-4 border-b border-gray-100 shrink-0">
-                            <h2 id="salary-overview-title" className="text-lg font-bold text-gray-900 pr-10">
+                        <div className="px-8 pt-8 pb-6 border-b border-white/5 shrink-0 bg-transparent">
+                            <h2 id="salary-overview-title" className="text-xl font-black text-white pr-10 uppercase tracking-widest">
                                 {salaryOverviewModal.name}
                             </h2>
-                            <p className="text-sm text-gray-500 mt-1">
+                            <p className="text-[10px] uppercase font-bold tracking-widest text-white/40 mt-2">
                                 {t('employees.salaryOverviewSubtitle')} —{' '}
-                                <span className="font-semibold text-gray-700 capitalize">{statsMonthLabel}</span>
+                                <span className="text-blue-400">{statsMonthLabel}</span>
                             </p>
                         </div>
-                        <div className="px-6 py-4 overflow-y-auto flex-1 min-h-0 space-y-4">
+                        <div className="px-8 py-6 overflow-y-auto flex-1 min-h-0 space-y-6 custom-scrollbar">
                             <div>
-                                <p className="text-sm font-bold text-gray-900 mb-2">{t('employees.advancesAccountingTitle')}</p>
-                                <div className="rounded-xl border border-amber-200/80 bg-amber-50/50 px-3 py-2 text-[11px] text-amber-950 tabular-nums font-semibold">
-                                    {t('employees.salaryModalPaidAdvanceLabel')}:{' '}
-                                    {formatUzs(salaryOverviewPayoutContext.advSum)}
+                                <p className="text-[10px] font-black uppercase tracking-widest text-white/50 mb-3">{t('employees.advancesAccountingTitle')}</p>
+                                <div className="rounded-[1.5rem] border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-400 tabular-nums font-bold shadow-inner">
+                                    <span className="uppercase tracking-widest opacity-80">{t('employees.salaryModalPaidAdvanceLabel')}:</span>{' '}
+                                    <span className="font-black text-amber-500 neon-text">{formatUzs(salaryOverviewPayoutContext.advSum)}</span>
                                 </div>
                             </div>
-                            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-gray-800 space-y-1.5 tabular-nums">
+                            <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.02] shadow-inner px-5 py-4 text-xs text-white/70 space-y-3 tabular-nums font-bold">
                                 <div className="flex flex-wrap justify-between gap-x-2">
-                                    <span className="text-gray-600">{t('employees.salaryModalContractLabel')}</span>
-                                    <span className="font-semibold">{formatUzs(salaryOverviewPayoutContext.contractTotal)}</span>
+                                    <span className="uppercase tracking-widest text-[9px] opacity-60">{t('employees.salaryModalContractLabel')}</span>
+                                    <span className="font-black text-white">{formatUzs(salaryOverviewPayoutContext.contractTotal)}</span>
                                 </div>
                                 <div className="flex flex-wrap justify-between gap-x-2">
-                                    <span className="text-gray-600">{t('employees.salaryModalPaidAdvanceLabel')}</span>
-                                    <span className="font-semibold text-amber-900">{formatUzs(salaryOverviewPayoutContext.advSum)}</span>
+                                    <span className="uppercase tracking-widest text-[9px] opacity-60">{t('employees.salaryModalPaidAdvanceLabel')}</span>
+                                    <span className="font-black text-amber-400">{formatUzs(salaryOverviewPayoutContext.advSum)}</span>
                                 </div>
                                 <div className="flex flex-wrap justify-between gap-x-2">
-                                    <span className="text-gray-600">{t('employees.salaryModalPaidSalaryLabel')}</span>
-                                    <span className="font-semibold text-emerald-900">
+                                    <span className="uppercase tracking-widest text-[9px] opacity-60">{t('employees.salaryModalPaidSalaryLabel')}</span>
+                                    <span className="font-black text-emerald-400">
                                         {salaryPaymentsTableMissing ? '—' : formatUzs(salaryOverviewPayoutContext.salSum)}
                                     </span>
                                 </div>
-                                <div className="flex flex-wrap justify-between gap-x-2 pt-1 border-t border-slate-200">
-                                    <span className="text-gray-700 font-medium">{t('employees.salaryModalTotalPaidLabel')}</span>
-                                    <span className="font-bold">
+                                <div className="flex flex-wrap justify-between gap-x-2 pt-3 border-t border-white/5">
+                                    <span className="text-[10px] uppercase tracking-widest text-white">{t('employees.salaryModalTotalPaidLabel')}</span>
+                                    <span className="font-black text-white">
                                         {salaryPaymentsTableMissing
                                             ? formatUzs(salaryOverviewPayoutContext.advSum)
                                             : formatUzs(salaryOverviewPayoutContext.totalOut)}
                                     </span>
                                 </div>
-                                <div className="flex flex-wrap justify-between gap-x-2">
-                                    <span className="text-gray-700 font-medium">{t('employees.salaryModalRemainingLabel')}</span>
-                                    <span className="font-bold text-amber-800">
+                                <div className="flex flex-wrap justify-between gap-x-2 pt-1">
+                                    <span className="text-[10px] uppercase tracking-widest text-white">{t('employees.salaryModalRemainingLabel')}</span>
+                                    <span className="font-black text-amber-400">
                                         {salaryPaymentsTableMissing
                                             ? '—'
                                             : formatUzs(salaryOverviewPayoutContext.remaining)}
@@ -1749,11 +1733,11 @@ export default function Xodimlar() {
                                 </div>
                             </div>
                             <div>
-                                <p className="text-xs font-bold uppercase tracking-wide text-gray-500 mb-2">
+                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/50 mb-3">
                                     {t('employees.salaryOverviewListTitle')}
                                 </p>
                                 {salaryOverviewPayoutContext.timeline.length > 0 ? (
-                                    <ol className="space-y-2 text-xs text-gray-700 list-none pl-0">
+                                    <ol className="space-y-3 text-xs list-none pl-0">
                                         {salaryOverviewPayoutContext.timeline.map((item, idx) => (
                                             <li
                                                 key={
@@ -1761,54 +1745,56 @@ export default function Xodimlar() {
                                                         ? `ov-a-${item.raw?.id || `${item.sortKey}-${idx}`}`
                                                         : `ov-s-${item.raw?.id || `${item.sortKey}-${idx}`}`
                                                 }
-                                                className="rounded-lg border border-gray-100 bg-gray-50/80 px-2 py-2 tabular-nums flex gap-2"
+                                                className="rounded-[1.5rem] border border-white/10 bg-white/[0.02] px-4 py-3 tabular-nums flex gap-3 items-start shadow-inner"
                                             >
-                                                <span className="text-gray-400 font-bold shrink-0">{idx + 1}.</span>
+                                                <span className="text-white/20 font-black shrink-0 text-[10px] pt-0.5">{idx + 1}.</span>
                                                 <div className="min-w-0 flex-1">
-                                                    <span className="text-gray-500">{formatAdvanceDate(item.displayDate)}</span>
-                                                    <span className="text-gray-400"> — </span>
-                                                    <span className="font-semibold text-gray-900">{formatUzs(item.amount)}</span>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-white/40 font-mono text-[10px] tracking-wider">{formatAdvanceDate(item.displayDate)}</span>
+                                                        <span className="text-white/20">—</span>
+                                                        <span className="font-black text-white/90">{formatUzs(item.amount)}</span>
+                                                    </div>
                                                     {item.note ? (
-                                                        <div className="text-[11px] text-gray-500 mt-1">{item.note}</div>
+                                                        <div className="text-[10px] text-white/40 mt-1 uppercase tracking-widest">{item.note}</div>
                                                     ) : null}
                                                 </div>
                                             </li>
                                         ))}
                                     </ol>
                                 ) : (
-                                    <p className="text-sm text-gray-400">{t('employees.noPayoutsThisMonth')}</p>
+                                    <p className="text-[10px] uppercase tracking-widest font-black text-white/30">{t('employees.noPayoutsThisMonth')}</p>
                                 )}
                             </div>
                         </div>
-                        <div className="px-6 py-4 border-t border-gray-100 shrink-0 bg-white rounded-b-2xl space-y-3">
-                            <p className="text-xs font-bold uppercase tracking-wide text-gray-500">
+                        <div className="px-8 py-6 border-t border-white/5 shrink-0 bg-black/40 rounded-b-[2.5rem] space-y-4 relative">
+                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/50">
                                 {t('employees.salaryOverviewFormLead')}
                             </p>
                             {salaryPaymentsTableMissing || closedPeriodYms.includes(reportPeriodYm) ? (
-                                <p className="text-sm text-amber-800 rounded-xl bg-amber-50 border border-amber-100 px-3 py-2">
+                                <p className="text-[11px] font-bold text-amber-400 uppercase tracking-widest rounded-[1.5rem] bg-amber-500/10 border border-amber-500/20 px-4 py-3">
                                     {salaryPaymentsTableMissing
                                         ? t('employees.salaryPaymentsTableMissing')
                                         : t('employees.payrollMonthClosedNoNewRows')}
                                 </p>
                             ) : (
-                                <form onSubmit={handleSalaryPaymentSubmit} className="space-y-3">
-                                    <p className="text-[11px] text-gray-500 leading-relaxed">
+                                <form onSubmit={handleSalaryPaymentSubmit} className="space-y-4">
+                                    <p className="text-[9px] font-bold text-white/30 uppercase tracking-widest leading-relaxed">
                                         {t('employees.salaryPaymentCalculatedTotalsNote')}
                                     </p>
-                                    <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2.5 space-y-2 text-xs tabular-nums">
+                                    <div className="rounded-[1.5rem] border border-white/5 bg-black/60 px-4 py-3 space-y-2 text-xs tabular-nums">
                                         <div className="flex flex-wrap justify-between gap-x-2 gap-y-1">
-                                            <span className="text-gray-600 font-medium">
+                                            <span className="text-white/50 uppercase tracking-widest text-[9px] font-bold">
                                                 {t('employees.salaryModalTotalPaidLabel')}
                                             </span>
-                                            <span className="font-bold text-gray-900">
+                                            <span className="font-black text-white">
                                                 {formatUzs(salaryOverviewPayoutContext.totalOut)}
                                             </span>
                                         </div>
-                                        <div className="flex flex-wrap justify-between gap-x-2 gap-y-1 pt-1 border-t border-slate-200">
-                                            <span className="text-gray-700 font-bold">
+                                        <div className="flex flex-wrap justify-between gap-x-2 gap-y-1 pt-2 border-t border-white/5">
+                                            <span className="text-white/80 uppercase tracking-widest text-[9px] font-black">
                                                 {t('employees.salaryPaymentAutoSaveAmountLabel')}
                                             </span>
-                                            <span className="font-bold text-emerald-800">
+                                            <span className="font-black text-emerald-400">
                                                 {salaryOverviewPayoutContext.salaryAutoSaveAmount >= 0.01
                                                     ? formatUzs(salaryOverviewPayoutContext.salaryAutoSaveAmount)
                                                     : '—'}
@@ -1817,17 +1803,17 @@ export default function Xodimlar() {
                                     </div>
                                     {salaryOverviewPayoutContext.salaryAutoSaveAmount >= 0.01 &&
                                     salaryOverviewPayoutContext.remaining < 0.01 ? (
-                                        <p className="text-xs text-emerald-900 rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2">
+                                        <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest rounded-[1.5rem] bg-emerald-500/10 border border-emerald-500/20 px-4 py-3">
                                             {t('employees.salaryCloseFromAdvanceHint')}
                                         </p>
                                     ) : null}
                                     {salaryOverviewPayoutContext.salaryAutoSaveAmount < 0.01 ? (
-                                        <p className="text-xs text-slate-700 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+                                        <p className="text-[10px] font-bold text-white/50 uppercase tracking-widest rounded-[1.5rem] bg-white/5 border border-white/10 px-4 py-3">
                                             {t('employees.salaryNoRemainingToSaveHint')}
                                         </p>
                                     ) : null}
-                                    <div className="space-y-1.5">
-                                        <label className="block text-xs font-bold text-gray-700">
+                                    <div className="space-y-2">
+                                        <label className="block text-[10px] font-black uppercase tracking-widest text-white/70 ml-2">
                                             {t('employees.salaryPaymentDateLabel')}
                                         </label>
                                         <input
@@ -1835,33 +1821,33 @@ export default function Xodimlar() {
                                             required={salaryOverviewPayoutContext.salaryAutoSaveAmount >= 0.01}
                                             value={salaryForm.payment_date}
                                             onChange={(e) => setSalaryForm({ ...salaryForm, payment_date: e.target.value })}
-                                            className="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                                            className="w-full px-5 py-3 border border-white/10 text-white rounded-[1.5rem] focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-sm bg-black/40 custom-calendar-icon"
                                         />
                                     </div>
-                                    <div className="space-y-1.5">
-                                        <label className="block text-xs font-bold text-gray-700">
+                                    <div className="space-y-2">
+                                        <label className="block text-[10px] font-black uppercase tracking-widest text-white/70 ml-2">
                                             {t('employees.salaryPaymentNoteLabel')}
                                         </label>
                                         <input
                                             type="text"
                                             value={salaryForm.note}
                                             onChange={(e) => setSalaryForm({ ...salaryForm, note: e.target.value })}
-                                            className="w-full px-3 py-2.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                                            className="w-full px-5 py-3 border border-white/10 text-white rounded-[1.5rem] focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-[11px] uppercase tracking-widest font-bold placeholder-white/20 bg-black/40"
                                             placeholder="—"
                                         />
                                     </div>
-                                    <div className="flex flex-wrap justify-end gap-2 pt-1">
+                                    <div className="flex flex-wrap justify-end gap-3 pt-4">
                                         <button
                                             type="button"
                                             onClick={closeSalaryOverviewModal}
-                                            className="px-5 py-2.5 rounded-xl font-bold text-gray-600 hover:bg-gray-100 text-sm"
+                                            className="px-6 py-3 rounded-[1.5rem] text-[11px] font-black uppercase tracking-widest text-white/50 hover:bg-white/10 hover:text-white transition-all border border-transparent"
                                         >
                                             {t('common.cancel')}
                                         </button>
                                         <button
                                             type="submit"
                                             disabled={salarySaving}
-                                            className="px-6 py-2.5 rounded-xl font-bold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 text-sm"
+                                            className="px-8 py-3 rounded-[1.5rem] text-[11px] font-black uppercase tracking-widest bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500 hover:text-white disabled:opacity-50 transition-all shadow-xl shadow-emerald-500/20"
                                         >
                                             {salarySaving
                                                 ? t('common.loading')
@@ -1870,7 +1856,7 @@ export default function Xodimlar() {
                                                   : t('common.close')}
                                         </button>
                                     </div>
-                                    <p className="text-[11px] text-gray-400">
+                                    <p className="text-[9px] uppercase tracking-widest font-bold text-white/30 text-right mt-2 mr-2">
                                         {salaryOverviewPayoutContext.salaryAutoSaveAmount >= 0.01
                                             ? t('employees.salarySaveClosesModalHint')
                                             : t('employees.salaryCloseModalHint')}
@@ -1882,16 +1868,16 @@ export default function Xodimlar() {
                 </div>
             ) : salaryOverviewModal && !salaryOverviewPayoutContext ? (
                 <div
-                    className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-[2px]"
+                    className="fixed inset-0 z-[9998] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
                     role="dialog"
                     aria-modal="true"
                 >
-                    <div className="relative w-full max-w-sm rounded-2xl border border-gray-100 bg-white p-6 shadow-2xl">
-                        <p className="text-sm text-gray-700">{t('employees.salaryOverviewNotFound')}</p>
+                    <div className="relative w-full max-w-sm rounded-[2rem] border border-white/10 glass p-8 shadow-2xl flex flex-col items-center">
+                        <p className="text-[11px] font-black uppercase tracking-widest text-white/70 text-center">{t('employees.salaryOverviewNotFound')}</p>
                         <button
                             type="button"
                             onClick={closeSalaryOverviewModal}
-                            className="mt-4 px-5 py-2 rounded-xl font-bold bg-gray-100 text-gray-800 hover:bg-gray-200"
+                            className="mt-6 px-8 py-3 rounded-[1.5rem] font-black uppercase tracking-widest text-[11px] bg-white/10 text-white hover:bg-white/20 transition-all"
                         >
                             {t('common.close')}
                         </button>
@@ -1901,27 +1887,28 @@ export default function Xodimlar() {
 
             {advanceModal && (
                 <div
-                    className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-[2px]"
+                    className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby="advance-modal-title"
                 >
-                    <div className="relative w-full max-w-md rounded-2xl border border-gray-100 bg-white p-6 shadow-2xl">
+                    <div className="relative w-full max-w-md rounded-[2.5rem] border border-white/10 glass p-8 shadow-2xl overflow-hidden">
+                        <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-amber-500/20 via-amber-400/50 to-amber-500/20"></div>
                         <button
                             type="button"
                             onClick={closeAdvanceModal}
-                            className="absolute right-4 top-4 rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                            className="absolute right-6 top-6 rounded-xl p-2 text-white/40 hover:bg-white/10 hover:text-white transition-all"
                             aria-label={t('common.close')}
                         >
                             <X size={20} />
                         </button>
-                        <h2 id="advance-modal-title" className="text-xl font-bold text-gray-900 pr-10 mb-1">
+                        <h2 id="advance-modal-title" className="text-xl font-black text-white pr-10 mb-2 uppercase tracking-widest">
                             {t('employees.advanceModalTitle')}
                         </h2>
-                        <p className="text-sm text-gray-500 mb-6">{advanceModal.name}</p>
-                        <form onSubmit={handleAdvanceSubmit} className="space-y-4">
+                        <p className="text-[10px] uppercase font-bold tracking-widest text-amber-400/80 mb-8">{advanceModal.name}</p>
+                        <form onSubmit={handleAdvanceSubmit} className="space-y-6">
                             <div className="space-y-2">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.advanceAmount')}</label>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-white/70 ml-2">{t('employees.advanceAmount')}</label>
                                 <input
                                     type="number"
                                     min="0"
@@ -1929,41 +1916,41 @@ export default function Xodimlar() {
                                     required
                                     value={advanceForm.amount}
                                     onChange={(e) => setAdvanceForm({ ...advanceForm, amount: e.target.value })}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none"
+                                    className="w-full px-5 py-3.5 border border-white/10 bg-white/[0.02] text-white rounded-[1.5rem] focus:ring-1 focus:ring-amber-500 focus:border-amber-500 outline-none text-sm font-black transition-all"
                                 />
                             </div>
                             <div className="space-y-2">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.advanceDateLabel')}</label>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-white/70 ml-2">{t('employees.advanceDateLabel')}</label>
                                 <input
                                     type="date"
                                     required
                                     value={advanceForm.advance_date}
                                     onChange={(e) => setAdvanceForm({ ...advanceForm, advance_date: e.target.value })}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none"
+                                    className="w-full px-5 py-3.5 border border-white/10 bg-white/[0.02] text-white rounded-[1.5rem] focus:ring-1 focus:ring-amber-500 focus:border-amber-500 outline-none text-sm font-black transition-all custom-calendar-icon"
                                 />
                             </div>
                             <div className="space-y-2">
-                                <label className="block text-sm font-bold text-gray-700">{t('employees.advanceNoteLabel')}</label>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-white/70 ml-2">{t('employees.advanceNoteLabel')}</label>
                                 <input
                                     type="text"
                                     value={advanceForm.note}
                                     onChange={(e) => setAdvanceForm({ ...advanceForm, note: e.target.value })}
-                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none"
+                                    className="w-full px-5 py-3.5 border border-white/10 bg-white/[0.02] text-white rounded-[1.5rem] focus:ring-1 focus:ring-amber-500 focus:border-amber-500 outline-none text-[11px] uppercase tracking-widest font-bold placeholder-white/20 transition-all"
                                     placeholder="—"
                                 />
                             </div>
-                            <div className="flex justify-end gap-3 pt-2">
+                            <div className="flex justify-end gap-3 pt-6">
                                 <button
                                     type="button"
                                     onClick={closeAdvanceModal}
-                                    className="px-5 py-2.5 rounded-xl font-bold text-gray-600 hover:bg-gray-100"
+                                    className="px-6 py-3.5 rounded-[1.5rem] font-black text-[11px] uppercase tracking-widest text-white/50 hover:bg-white/10 hover:text-white transition-all border border-transparent"
                                 >
                                     {t('common.cancel')}
                                 </button>
                                 <button
                                     type="submit"
                                     disabled={advanceSaving}
-                                    className="px-6 py-2.5 rounded-xl font-bold bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-60"
+                                    className="px-8 py-3.5 rounded-[1.5rem] font-black text-[11px] uppercase tracking-widest bg-amber-500/20 text-amber-500 border border-amber-500/30 hover:bg-amber-500 hover:text-white disabled:opacity-50 transition-all shadow-xl shadow-amber-500/20"
                                 >
                                     {advanceSaving ? t('common.loading') : t('common.save')}
                                 </button>
@@ -1973,6 +1960,13 @@ export default function Xodimlar() {
                 </div>
             )}
 
+                    </div>
+                </div>
+            </div>
+            <style jsx global>{`
+                .no-scrollbar::-webkit-scrollbar { display: none; }
+                .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+            `}</style>
         </div>
     )
 }

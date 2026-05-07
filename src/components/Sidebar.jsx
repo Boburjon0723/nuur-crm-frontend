@@ -1,181 +1,127 @@
 'use client'
 
-import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { useState, useEffect, useRef } from 'react'
-import { Package, Users, ShoppingCart, UserCircle, DollarSign, Home, LogOut, Settings, Globe, X, BarChart3, Warehouse, MessageSquare, ChevronDown, Image as ImageIcon, Megaphone } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
-import { EMPLOYEES_SECTION_UNLOCK_KEY } from '@/lib/employeesSectionPin'
-import { useLayout } from '@/context/LayoutContext'
-import { useLanguage } from '@/context/LanguageContext'
-import { useDialog } from '@/context/DialogContext'
+import Link from 'next/link'
+import {
+    LayoutGrid,
+    Package,
+    ShoppingCart,
+    Users,
+    Settings,
+    LogOut,
+    MessageSquare,
+    BarChart3,
+    Layers,
+    Globe,
+    Briefcase,
+    Zap,
+    ChevronRight,
+    Activity
+} from 'lucide-react'
 
-const LANGUAGES = [
-  { code: 'uz', label: "O'zbekcha" },
-  { code: 'ru', label: 'Русский' },
-  { code: 'en', label: 'English' }
+const MENU_ITEMS = [
+    { name: 'Dashboard', icon: LayoutGrid, href: '/', roles: ['admin', 'erp', 'crm'] },
+    { name: 'Media fayllar', icon: Layers, href: '/media', roles: ['admin', 'crm'] },
+    { name: 'Mahsulotlar', icon: Package, href: '/mahsulotlar', roles: ['admin', 'erp', 'crm'] },
+    { name: 'Ombor', icon: Briefcase, href: '/ombor', roles: ['admin', 'erp'] },
+    { name: 'Buyurtmalar', icon: ShoppingCart, href: '/buyurtmalar', roles: ['admin', 'erp', 'crm', 'seller'] },
+    { name: 'Mijozlar', icon: Users, href: '/mijozlar', roles: ['admin', 'crm'] },
+    { name: 'Xabarlar', icon: MessageSquare, href: '/xabarlar', roles: ['admin', 'crm'] },
+    { name: 'Xodimlar', icon: Users, href: '/xodimlar', roles: ['admin'] },
+    { name: 'Moliya', icon: Zap, href: '/moliya', roles: ['admin', 'erp'] },
+    { name: 'Statistika', icon: BarChart3, href: '/statistika', roles: ['admin', 'erp', 'crm'] },
+    { name: 'Web Sayt', icon: Globe, href: '/vebsayt', roles: ['admin'] },
+    { name: 'Sozlamalar', icon: Settings, href: '/settings', roles: ['admin'] }
 ]
 
-export default function Sidebar({ isOpen: propIsOpen, setIsOpen: propSetIsOpen }) {
-  const { sidebarOpen, setSidebarOpen } = useLayout()
-  const { t, language, changeLanguage } = useLanguage()
-  const [showLangDropdown, setShowLangDropdown] = useState(false)
-  const langDropdownRef = useRef(null)
-  const isOpen = propIsOpen !== undefined ? propIsOpen : sidebarOpen
-  const setIsOpen = propSetIsOpen || setSidebarOpen
+export default function Sidebar({ isOpen, setIsOpen }) {
+    const pathname = usePathname()
+    const router = useRouter()
 
-  const pathname = usePathname()
-  const router = useRouter()
-  const [siteName, setSiteName] = useState('Nuur Home')
-
-  useEffect(() => {
-    async function getSettings() {
-      const { data } = await supabase.from('settings').select('site_name').limit(1).single()
-      if (data?.site_name) setSiteName(data.site_name)
+    const handleLogout = () => {
+        localStorage.clear()
+        router.push('/login')
     }
-    getSettings()
-  }, [])
 
-  useEffect(() => {
-    function handleClickOutside(e) {
-      if (langDropdownRef.current && !langDropdownRef.current.contains(e.target)) {
-        setShowLangDropdown(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
+    return (
+        <aside
+            className={`fixed inset-y-0 left-0 z-50 w-72 bg-[#08080E] border-r border-blue-500/10 transition-transform duration-500 lg:translate-x-0 ${
+                isOpen ? 'translate-x-0' : '-translate-x-full'
+            }`}
+        >
+            {/* Subtle Gradient Glow */}
+            <div className="absolute top-0 left-0 w-full h-64 bg-gradient-to-b from-blue-600/5 to-transparent pointer-events-none" />
+            
+            <div className="flex flex-col h-full p-6 relative z-10">
+                {/* Logo Section */}
+                <div className="flex items-center gap-4 mb-12 px-2">
+                    <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center p-2.5 shadow-[0_0_20px_rgba(37,99,235,0.3)]">
+                        <img src="/favicon.svg" alt="NuurHome" className="w-full h-full object-contain invert brightness-0" />
+                    </div>
+                    <div className="flex flex-col">
+                        <h1 className="text-xl font-black tracking-tighter text-white uppercase italic leading-none">
+                            Nuur <span className="text-blue-500">Home</span>
+                        </h1>
+                        <p className="text-[9px] text-blue-500/40 uppercase tracking-[0.3em] font-black mt-1">Management</p>
+                    </div>
+                </div>
 
-  const menuItems = [
-    { href: '/', icon: Home, label: t('common.dashboard') },
-    { href: '/media-library', icon: ImageIcon, label: t('common.mediaLibraryMenu') },
-    { href: '/mahsulotlar', icon: Package, label: t('common.products') },
-    { href: '/ombor', icon: Warehouse, label: t('common.warehouse') },
-    { href: '/buyurtmalar', icon: ShoppingCart, label: t('common.orders') },
-    { href: '/mijozlar', icon: UserCircle, label: t('common.customers') },
-    { href: '/xabarlar', icon: MessageSquare, label: t('common.messages') },
-    { href: '/xodimlar', icon: Users, label: t('common.employees') },
-    { href: '/moliya', icon: DollarSign, label: t('common.finance') },
-    { href: '/statistika', icon: BarChart3, label: t('common.statistics') },
-    { href: '/meta-ads', icon: Megaphone, label: t('common.metaAds') },
-    { href: '/vebsayt', icon: Globe, label: t('common.website') },
-  ]
-  function isMenuActive(href) {
-    if (href === '/') return pathname === '/'
-    return pathname === href || pathname.startsWith(`${href}/`)
-  }
+                {/* Navigation Menu */}
+                <nav className="flex-1 space-y-1 overflow-y-auto no-scrollbar -mx-2 px-2">
+                    {MENU_ITEMS.map((item) => {
+                        const isActive = pathname === item.href
+                        const Icon = item.icon
+                        
+                        return (
+                            <Link
+                                key={item.name}
+                                href={item.href}
+                                className={`flex items-center gap-4 px-5 py-4 rounded-2xl transition-all duration-300 group relative ${
+                                    isActive 
+                                    ? 'bg-blue-600/10 text-blue-400 border border-blue-500/20' 
+                                    : 'text-slate-500 hover:text-blue-400 hover:bg-white/[0.02]'
+                                }`}
+                            >
+                                <div className={`transition-all duration-300 ${isActive ? 'text-blue-400' : 'group-hover:text-blue-400'}`}>
+                                    <Icon size={19} strokeWidth={isActive ? 2.5 : 2} />
+                                </div>
+                                <span className={`text-[12px] font-black tracking-tight uppercase italic ${isActive ? 'opacity-100' : 'opacity-60 group-hover:opacity-100'}`}>
+                                    {item.name}
+                                </span>
+                                {isActive && (
+                                    <div className="ml-auto">
+                                        <div className="w-1.5 h-1.5 bg-blue-500 rounded-full shadow-[0_0_10px_#3b82f6]" />
+                                    </div>
+                                )}
+                            </Link>
+                        )
+                    })}
+                </nav>
 
-  const handleLogout = async () => {
-    const { error } = await supabase.auth.signOut()
-    if (!error) {
-      try {
-        sessionStorage.removeItem(EMPLOYEES_SECTION_UNLOCK_KEY)
-      } catch (_) {
-        /* ignore */
-      }
-      router.push('/login')
-    } else {
-      await showAlert(t('common.logoutError'), { variant: 'error' })
-    }
-  }
-
-  return (
-    <>
-      {/* Overlay for mobile */}
-      {isOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-40 lg:hidden backdrop-blur-sm"
-          onClick={() => setIsOpen(false)}
-        />
-      )}
-
-      <div className={`w-72 bg-gradient-to-b from-blue-900 via-slate-900 to-slate-900 text-white h-screen p-6 fixed left-0 top-0 z-50 transition-all duration-300 shadow-2xl flex flex-col ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
-        <div className="flex justify-between items-center mb-8 flex-shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-white/10 rounded-xl flex items-center justify-center shadow-lg backdrop-blur-sm border border-white/10">
-              <img
-                src="/favicon.svg"
-                alt="CRM Logo"
-                className="h-8 w-8 rounded-full object-cover object-center ring-1 ring-white/20"
-                width={32}
-                height={32}
-                decoding="async"
-              />
+                {/* Bottom Section */}
+                <div className="mt-6 pt-6 border-t border-white/[0.05] space-y-4">
+                    <button
+                        onClick={handleLogout}
+                        className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-rose-500/40 hover:text-rose-500 hover:bg-rose-500/5 transition-all group"
+                    >
+                        <LogOut size={20} strokeWidth={2} />
+                        <span className="text-[12px] font-black tracking-tight uppercase italic">Chiqish</span>
+                    </button>
+                    
+                    <div className="px-2">
+                        <div className="bg-white/[0.02] rounded-3xl p-5 border border-white/[0.05] flex items-center gap-4">
+                            <div className="relative">
+                                <Activity size={18} className="text-blue-500" />
+                                <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-[#08080E] animate-pulse" />
+                            </div>
+                            <div className="flex flex-col">
+                                <p className="text-[10px] font-black text-white/80 uppercase tracking-tighter">Tizim Online</p>
+                                <p className="text-[8px] font-bold text-white/20 uppercase">V 2.5.0</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div className="min-w-0">
-              <h1 className="text-xl font-bold tracking-tight truncate">{siteName}</h1>
-              <p className="text-xs text-blue-200">{t('common.managementSystem')}</p>
-            </div>
-          </div>
-          <button
-            onClick={() => setIsOpen(false)}
-            className="lg:hidden p-2 hover:bg-white/10 rounded-lg transition-colors"
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        <nav className="space-y-1.5 flex-1 overflow-y-auto pr-2 custom-scrollbar pb-6">
-          {menuItems.map((item) => {
-            const isActive = isMenuActive(item.href)
-            const Icon = item.icon
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setIsOpen(false)}
-                className={`flex items-center gap-4 px-4 py-3.5 rounded-xl transition-all duration-200 group ${isActive
-                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50 scale-[1.02]'
-                  : 'text-gray-300 hover:bg-white/5 hover:text-white hover:pl-5'
-                  }`}
-              >
-                <Icon size={22} className={`transition-colors ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-blue-400'}`} />
-                <span className="font-medium tracking-wide">{item.label}</span>
-                {isActive && (
-                  <div className="ml-auto w-1.5 h-1.5 rounded-full bg-white/50" />
-                )}
-              </Link>
-            )
-          })}
-        </nav>
-
-        <div className="pt-6 border-t border-white/5 flex-shrink-0 space-y-2">
-          {/* Til tanlash - dropdown */}
-          <div className="relative" ref={langDropdownRef}>
-            <button
-              onClick={() => setShowLangDropdown(!showLangDropdown)}
-              className="flex w-full items-center justify-between gap-3 px-4 py-3.5 rounded-xl text-gray-300 hover:bg-white/5 hover:text-white transition-all border border-white/5"
-            >
-              <div className="flex items-center gap-3">
-                <Globe size={20} className="text-blue-300" />
-                <span className="font-medium">{LANGUAGES.find(l => l.code === language)?.label || language}</span>
-              </div>
-              <ChevronDown size={18} className={`text-gray-400 transition-transform ${showLangDropdown ? 'rotate-180' : ''}`} />
-            </button>
-            {showLangDropdown && (
-              <div className="absolute bottom-full left-0 right-0 mb-1 bg-slate-800 rounded-xl border border-white/10 overflow-hidden shadow-xl z-50">
-                {LANGUAGES.map(lang => (
-                  <button
-                    key={lang.code}
-                    onClick={() => { changeLanguage(lang.code); setShowLangDropdown(false); }}
-                    className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${language === lang.code ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-white/5 hover:text-white'}`}
-                  >
-                    {lang.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <button
-            onClick={handleLogout}
-            className="flex w-full items-center gap-3 px-4 py-3.5 rounded-xl text-red-300 hover:bg-red-500/10 hover:text-red-200 transition-all border border-transparent hover:border-red-500/20"
-          >
-            <LogOut size={20} />
-            <span className="font-medium">{t('common.logout')}</span>
-          </button>
-        </div>
-      </div>
-    </>
-  )
+        </aside>
+    )
 }

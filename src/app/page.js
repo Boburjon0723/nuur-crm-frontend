@@ -1,253 +1,241 @@
 'use client'
 
-import { useEffect } from 'react'
-import Link from 'next/link'
-import { supabase } from '@/lib/supabase'
+import { useState, useEffect } from 'react'
 import Header from '@/components/Header'
 import StatCard from '@/components/StatCard'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts'
-import { Package, Users, ShoppingCart, DollarSign, TrendingUp } from 'lucide-react'
+import { 
+    AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
+} from 'recharts'
+import { Package, Users, ShoppingCart, DollarSign, TrendingUp, ArrowUpRight, Clock } from 'lucide-react'
 import { useLayout } from '@/context/LayoutContext'
 import { useLanguage } from '@/context/LanguageContext'
-import { useDashboardStats, useRecentOrders } from '@/hooks/useDashboardStats'
-import { useQueryClient } from '@tanstack/react-query'
+import { api } from '@/utils/api'
+import Link from 'next/link'
 
-/**
- * Haftalik tranzaksiya ma'lumotlarini grafik uchun formatlash.
- * Bu funksiyani komponent tashqarisida saqlash — render bilan bog'liq emas.
- */
-function buildChartData(transactions, t, language) {
-  const daysUz = [
-    t('dashboard.sun'), t('dashboard.mon'), t('dashboard.tue'),
-    t('dashboard.wed'), t('dashboard.thu'), t('dashboard.fri'), t('dashboard.sat')
-  ]
-  const weeklyData = {}
-  for (let i = 6; i >= 0; i--) {
-    const date = new Date()
-    date.setDate(date.getDate() - i)
-    const dateStr = date.toISOString().split('T')[0]
-    const dayName = daysUz[date.getDay()]
-    weeklyData[dateStr] = { name: dayName, kirim: 0, chiqim: 0 }
-  }
-  transactions.forEach((tx) => {
-    if (weeklyData[tx.date]) {
-      if (tx.type === 'income') weeklyData[tx.date].kirim += (Number(tx.amount) || 0)
-      else weeklyData[tx.date].chiqim += (Number(tx.amount) || 0)
-    }
-  })
-  return Object.values(weeklyData)
+function formatUsd(amount) {
+    const n = Number(amount)
+    if (!Number.isFinite(n)) return '0'
+    return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })
 }
 
-
 export default function Dashboard() {
-  const { toggleSidebar } = useLayout()
-  const { t, language } = useLanguage()
-  const queryClient = useQueryClient()
+    const { toggleSidebar } = useLayout()
+    const { t } = useLanguage()
+    
+    const [loading, setLoading] = useState(true)
+    const [stats, setStats] = useState({
+        mahsulotlar: 0,
+        xodimlar: 0,
+        buyurtmalar: 0,
+        foyda: '0'
+    })
+    const [chartData, setChartData] = useState([])
+    const [recentOrders, setRecentOrders] = useState([])
 
-  // React Query: keshdan tezkor ko'rsatish + orqafon yangilanish
-  const { data: statsData, isLoading: statsLoading, error: statsError } = useDashboardStats()
-  const { data: recentOrders = [], isLoading: ordersLoading } = useRecentOrders()
+    useEffect(() => {
+        const fetchDashboardData = async () => {
+            try {
+                // Fetch last 30 days analytics
+                const start = new Date()
+                start.setDate(start.getDate() - 30)
+                const end = new Date()
+                
+                const [analyticsRes, ordersRes] = await Promise.all([
+                    api.get(`/api/statistics/analytics?start=${start.toISOString()}&end=${end.toISOString()}`),
+                    api.get('/api/orders?limit=10') // the API might not support limit directly, we'll slice it
+                ])
 
-  const loading = statsLoading || ordersLoading
+                const data = analyticsRes.data
+                
+                setStats({
+                    mahsulotlar: data.summary?.productsCount || 0,
+                    xodimlar: data.summary?.employeesCount || 0,
+                    buyurtmalar: data.summary?.ordersCount || 0,
+                    foyda: formatUsd(data.summary?.totalIncome || 0) + ' $'
+                })
 
-  // Statistika ma'lumotlari
-  const stats = {
-    mahsulotlar: statsData?.mahsulotlar ?? 0,
-    xodimlar: statsData?.xodimlar ?? 0,
-    buyurtmalar: statsData?.buyurtmalar ?? 0,
-    foyda: statsData?.foyda ?? 0,
-  }
+                // Format chart data combining salesTrend and financeTrend
+                const chartMap = {}
+                if (data.salesTrend) {
+                    data.salesTrend.forEach(t => {
+                        chartMap[t.date] = { name: t.date.slice(-5), kirim: t.amount, chiqim: 0 }
+                    })
+                }
+                if (data.financeTrend) {
+                    data.financeTrend.forEach(t => {
+                        if (!chartMap[t.date]) chartMap[t.date] = { name: t.date.slice(-5), kirim: t.income || 0, chiqim: t.expense || 0 }
+                        else {
+                            chartMap[t.date].kirim = Math.max(chartMap[t.date].kirim, t.income || 0)
+                            chartMap[t.date].chiqim = t.expense || 0
+                        }
+                    })
+                }
+                setChartData(Object.values(chartMap).sort((a,b) => a.name.localeCompare(b.name)).slice(-14)) // last 14 active days
 
-  // Grafik uchun haftalik ma'lumot
-  const chartData = buildChartData(statsData?.transactions || [], t, language)
-
-  // Supabase realtime — yangi buyurtmada keshni yangilash
-  useEffect(() => {
-    const ordersChannel = supabase
-      .channel('dashboard_updates')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'orders' },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
-          queryClient.invalidateQueries({ queryKey: ['recent-orders'] })
+                // Set recent orders
+                const ords = Array.isArray(ordersRes.data) ? ordersRes.data : (ordersRes.data?.orders || [])
+                setRecentOrders(ords.sort((a,b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5))
+            } catch (error) {
+                console.error("Dashboard yuklashda xato:", error)
+            } finally {
+                setLoading(false)
+            }
         }
-      )
-      .subscribe()
+        fetchDashboardData()
+    }, [])
 
-    return () => {
-      supabase.removeChannel(ordersChannel)
+    if (loading) {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-screen text-white/50 space-y-4">
+                <div className="w-12 h-12 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin"></div>
+                <div className="text-xs font-black uppercase tracking-widest animate-pulse">Yuklanmoqda...</div>
+            </div>
+        )
     }
-  }, [queryClient])
 
-  if (loading) {
     return (
-      <div className="p-8">
-        <div className="flex items-center justify-center h-screen">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600 mx-auto mb-4"></div>
-            <p className="text-gray-600">{t('common.loading')}</p>
-          </div>
+        <div className="animate-in fade-in duration-1000">
+            <Header title="Dashboard" toggleSidebar={toggleSidebar} />
+
+            {/* Stats Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
+                <StatCard
+                    icon={Package}
+                    title="Jami Mahsulotlar"
+                    value={stats.mahsulotlar}
+                    color="bg-blue-500"
+                    trend={12}
+                    href="/mahsulotlar"
+                />
+                <StatCard
+                    icon={Users}
+                    title="Xodimlar"
+                    value={stats.xodimlar}
+                    color="bg-purple-500"
+                    trend={5}
+                    href="/xodimlar"
+                />
+                <StatCard
+                    icon={ShoppingCart}
+                    title="Bugungi Buyurtmalar"
+                    value={stats.buyurtmalar}
+                    color="bg-indigo-500"
+                    trend={-2}
+                    href="/buyurtmalar"
+                />
+                <StatCard
+                    icon={DollarSign}
+                    title="Oylik Foyda"
+                    value={stats.foyda}
+                    color="bg-emerald-500"
+                    trend={24}
+                    href="/moliya"
+                />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Main Chart Card */}
+                <div className="lg:col-span-2 bg-white/[0.03] backdrop-blur-3xl border border-white/10 rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden group">
+                    <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-br from-blue-600/5 to-transparent pointer-events-none"></div>
+                    
+                    <div className="flex items-center justify-between mb-10 relative z-10">
+                        <div>
+                            <h3 className="text-xl font-black text-white tracking-tight flex items-center gap-3">
+                                <TrendingUp className="text-blue-500" size={24} />
+                                Moliyaviy Dinamika
+                            </h3>
+                            <p className="text-white/30 text-xs mt-1 uppercase tracking-widest font-bold">Oxirgi 7 kunlik tahlil</p>
+                        </div>
+                        <div className="flex gap-2">
+                            <div className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-xs font-bold text-white/60">
+                                <span className="w-2 h-2 bg-blue-500 rounded-full"></span> Kirim
+                            </div>
+                            <div className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-xs font-bold text-white/60">
+                                <span className="w-2 h-2 bg-red-500 rounded-full"></span> Chiqim
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="h-[400px] w-full relative z-10">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={chartData}>
+                                <defs>
+                                    <linearGradient id="colorKirim" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                                    </linearGradient>
+                                    <linearGradient id="colorChiqim" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3}/>
+                                        <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
+                                <XAxis 
+                                    dataKey="name" 
+                                    axisLine={false} 
+                                    tickLine={false} 
+                                    tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 11, fontWeight: 'bold' }} 
+                                    dy={15} 
+                                />
+                                <YAxis 
+                                    axisLine={false} 
+                                    tickLine={false} 
+                                    tick={{ fill: 'rgba(255,255,255,0.3)', fontSize: 11, fontWeight: 'bold' }} 
+                                />
+                                <Tooltip 
+                                    contentStyle={{ 
+                                        backgroundColor: '#0a0a1a', 
+                                        borderRadius: '20px', 
+                                        border: '1px solid rgba(255,255,255,0.1)',
+                                        boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
+                                        color: '#fff'
+                                    }} 
+                                    itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
+                                />
+                                <Area type="monotone" dataKey="kirim" stroke="#3b82f6" strokeWidth={4} fillOpacity={1} fill="url(#colorKirim)" />
+                                <Area type="monotone" dataKey="chiqim" stroke="#ef4444" strokeWidth={4} fillOpacity={1} fill="url(#colorChiqim)" />
+                            </AreaChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+
+                {/* Side List Card */}
+                <div className="bg-white/[0.03] backdrop-blur-3xl border border-white/10 rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden">
+                    <h3 className="text-xl font-black text-white tracking-tight mb-8">So'nggi Buyurtmalar</h3>
+                    
+                    <div className="space-y-6">
+                        {recentOrders.length > 0 ? recentOrders.map((ord, i) => (
+                            <Link href="/buyurtmalar" key={ord.id} className="flex items-center justify-between group cursor-pointer p-4 bg-white/[0.02] border border-white/5 rounded-2xl hover:bg-white/5 hover:border-white/10 hover:shadow-[0_0_15px_-3px_rgba(59,130,246,0.3)] transition-all">
+                                <div className="flex items-center gap-4">
+                                    <div className="w-12 h-12 rounded-xl bg-blue-600/10 flex items-center justify-center text-blue-500 font-black text-lg shadow-inner">
+                                        {(ord.customer_name?.[0] || 'M').toUpperCase()}
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-white text-sm group-hover:text-blue-400 transition-colors">{ord.customer_name || 'Noma\'lum mijoz'}</p>
+                                        <p className="text-[10px] text-white/30 uppercase tracking-widest font-bold flex items-center gap-1 mt-1">
+                                            <Clock size={10}/> {new Date(ord.created_at).toLocaleDateString()}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="text-right">
+                                    <p className="font-black text-white text-sm tracking-wider">{formatUsd(ord.total)} $</p>
+                                    <div className={`flex items-center justify-end gap-1 text-[9px] font-bold uppercase mt-1 ${ord.status === 'completed' || ord.status === 'Tugallandi' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                        {ord.status} <ArrowUpRight size={10} />
+                                    </div>
+                                </div>
+                            </Link>
+                        )) : (
+                            <div className="text-center text-white/20 text-xs font-black uppercase tracking-widest mt-10">
+                                Buyurtmalar mavjud emas
+                            </div>
+                        )}
+                    </div>
+
+                    <Link href="/buyurtmalar" className="flex items-center justify-center w-full mt-8 py-4 bg-white/5 hover:bg-white/10 border border-white/10 rounded-2xl text-xs font-black text-white/40 hover:text-white uppercase tracking-widest transition-all">
+                        Barchasini ko'rish
+                    </Link>
+                </div>
+            </div>
         </div>
-      </div>
     )
-  }
-
-
-  return (
-    <div className="max-w-7xl mx-auto">
-      {/* Banner to force PWA/Mobile view without back history */}
-      <div className="block md:hidden p-4 mb-2">
-        <button
-          onClick={() => window.location.replace('/mobile')}
-          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-all outline-none"
-        >
-          📱 Mobil versiyaga o'tish (PWA shaklida)
-        </button>
-      </div>
-
-      <Header title={t('common.dashboard')} toggleSidebar={toggleSidebar} />
-
-      {statsError ? (
-        <div className="mx-4 md:mx-6 mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <p>
-            <span className="font-semibold">{t('dashboard.loadErrorTitle')}</span>{' '}
-            <span className="text-amber-900/90 break-words">{statsError?.message || String(statsError)}</span>
-          </p>
-          <button
-            type="button"
-            onClick={() => {
-              queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
-              queryClient.invalidateQueries({ queryKey: ['recent-orders'] })
-            }}
-            className="shrink-0 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-950 hover:bg-amber-100"
-          >
-            {t('dashboard.retryLoad')}
-          </button>
-        </div>
-      ) : null}
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-6 md:mb-8 px-4 md:px-6">
-        <StatCard
-          icon={Package}
-          title={t('dashboard.products')}
-          value={stats.mahsulotlar}
-          color="bg-blue-500"
-          href="/mahsulotlar"
-        />
-        <StatCard
-          icon={Users}
-          title={t('dashboard.employees')}
-          value={stats.xodimlar}
-          color="bg-green-500"
-          href="/xodimlar"
-        />
-        <StatCard
-          icon={ShoppingCart}
-          title={t('common.orders')}
-          value={stats.buyurtmalar}
-          color="bg-purple-500"
-          href="/buyurtmalar"
-        />
-        <StatCard
-          icon={DollarSign}
-          title={t('dashboard.profit')}
-          value={`${(stats.foyda / 1000000).toFixed(1)}M`}
-          color="bg-amber-500"
-          href="/moliya"
-        />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-8 mb-6 md:mb-8 px-4 md:px-6">
-        <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-              <TrendingUp size={20} className="text-blue-600" />
-              {t('dashboard.weeklyStats')}
-            </h3>
-            <select className="bg-gray-50 border-none text-sm font-medium text-gray-500 rounded-lg p-2 outline-none">
-              <option>{t('dashboard.thisWeek')}</option>
-              <option>{t('dashboard.lastWeek')}</option>
-            </select>
-          </div>
-          <ResponsiveContainer width="100%" height={320}>
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} dy={10} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} />
-              <Tooltip
-                contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                cursor={{ stroke: '#cbd5e1', strokeWidth: 1, strokeDasharray: '4 4' }}
-              />
-              <Legend
-                formatter={(value) => value === 'kirim' ? t('dashboard.income') : t('dashboard.expense')}
-                wrapperStyle={{ paddingTop: '20px' }}
-              />
-              <Line type="monotone" dataKey="kirim" stroke="#2563eb" strokeWidth={3} dot={{ r: 4, fill: '#2563eb', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
-              <Line type="monotone" dataKey="chiqim" stroke="#ef4444" strokeWidth={3} dot={{ r: 4, fill: '#ef4444', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-bold text-gray-800 mb-6">{t('dashboard.recentOrders')}</h3>
-          <div className="space-y-4">
-            {recentOrders.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-                <ShoppingCart size={40} className="mb-3 opacity-20" />
-                <p>{t('dashboard.noOrders')}</p>
-              </div>
-            ) : (
-              recentOrders.map(order => (
-                <Link
-                  key={order.id}
-                  href={`/buyurtmalar?highlight=${encodeURIComponent(String(order.id))}`}
-                  className="flex justify-between items-center p-3 hover:bg-gray-50 rounded-xl transition-colors border border-transparent hover:border-gray-100 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600 font-bold text-sm">
-                      {order.mijoz?.charAt(0) || 'U'}
-                    </div>
-                    <div>
-                      <p className="font-bold text-gray-800 text-sm">{order.mijoz}</p>
-                      <p className="text-xs text-gray-500 w-32 truncate">{order.mahsulot}</p>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="font-bold text-gray-900 text-sm">{order.summa?.toLocaleString()} $</p>
-                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full ${order.status === 'Yangi' ? 'bg-blue-100 text-blue-700' :
-                      order.status === 'Jarayonda' ? 'bg-yellow-100 text-yellow-700' :
-                        'bg-green-100 text-green-700'
-                      }`}>
-                      {order.status}
-                    </span>
-                  </div>
-                </Link>
-              ))
-            )}
-          </div>
-          <Link
-            href="/buyurtmalar"
-            className="block w-full mt-6 py-2.5 text-center text-sm font-medium text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
-          >
-            {t('dashboard.viewAll')}
-          </Link>
-        </div>
-      </div>
-
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mx-6 mb-8">
-        <h3 className="text-lg font-bold text-gray-800 mb-6">{t('dashboard.monthlyStats')}</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={chartData} barSize={40}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} dy={10} />
-            <YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} />
-            <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-            <Legend formatter={(value) => value === 'kirim' ? t('dashboard.income') : t('dashboard.expense')} />
-            <Bar dataKey="kirim" fill="#2563eb" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="chiqim" fill="#ef4444" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  )
 }

@@ -13,7 +13,8 @@ import {
   Trash2, 
   RotateCcw,
   Truck,
-  Warehouse
+  Warehouse,
+  RefreshCcw
 } from 'lucide-react';
 import { 
   normalizeOrderItemsForList, 
@@ -53,14 +54,14 @@ export default function OrdersTable({
 
   if (filteredOrders.length === 0) {
     return (
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+      <div className="bg-[#12121a]/60 backdrop-blur-xl rounded-[2rem] border border-white/5 shadow-2xl overflow-hidden mb-8">
+        <div className="flex flex-col items-center justify-center py-20 text-white/30 uppercase tracking-[0.2em] font-black">
           {ordersListView === 'trash' ? (
             <Archive size={48} className="mb-4 opacity-20" />
           ) : (
             <ShoppingCart size={48} className="mb-4 opacity-20" />
           )}
-          <p className="font-medium text-lg">
+          <p className="text-xs">
             {ordersListView === 'trash' ? t('orders.trashEmpty') : t('orders.noOrders')}
           </p>
         </div>
@@ -69,16 +70,16 @@ export default function OrdersTable({
   }
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-      <div className="overflow-x-auto -mx-1 px-1 sm:mx-0 sm:px-0">
+    <div className="bg-[#12121a]/60 backdrop-blur-xl rounded-[2rem] border border-white/5 shadow-2xl p-4 lg:p-6 mb-8 overflow-hidden">
+      <div className="overflow-x-auto custom-scrollbar -mx-4 px-4 sm:mx-0 sm:px-0">
         <table className="w-full min-w-[860px] text-left border-collapse table-auto">
           <thead>
-            <tr className="bg-gray-50/50 border-b border-gray-100 text-xs uppercase tracking-wider text-gray-500 font-bold">
+            <tr className="border-b border-white/5 text-[10px] uppercase tracking-[0.2em] text-white/30 font-black">
               {ordersListView === 'active' && (
                 <th className="w-10 shrink-0 px-2 py-3 sm:px-3 rounded-tl-2xl text-center" title={t('orders.mergeSelectColumn')}>
                   <input
                     type="checkbox"
-                    className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    className="h-4 w-4 rounded border-white/10 bg-white/5 text-blue-500 focus:ring-blue-500/50 focus:ring-offset-0"
                     checked={
                       filteredOrders.length > 0 &&
                       filteredOrders.every((o) => mergeSelection[o.id])
@@ -102,7 +103,7 @@ export default function OrdersTable({
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-50">
+          <tbody className="divide-y divide-white/5">
             {filteredOrders.map((item) => (
               (() => {
                 const itemStatus = normalizeStatusForSelect(item.status);
@@ -117,44 +118,49 @@ export default function OrdersTable({
               <tr
                 key={item.id}
                 id={`order-row-${item.id}`}
-                className="hover:bg-blue-50/30 transition-colors scroll-mt-24"
+                className="hover:bg-white/[0.02] transition-colors scroll-mt-24 group"
               >
                 {ordersListView === 'active' && (
                   <td className="px-2 py-3 sm:px-3 sm:py-4 align-top text-center">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 mt-1"
+                      className="h-4 w-4 rounded border-white/10 bg-white/5 text-blue-500 focus:ring-blue-500/50 focus:ring-offset-0 mt-1"
                       checked={!!mergeSelection[item.id]}
                       onChange={() => toggleMergeSelectOrder(item.id)}
                       aria-label={t('orders.mergeSelectColumn')}
                     />
                   </td>
                 )}
-                <td className="px-3 py-3 sm:px-4 sm:py-4 align-top">
+                <td className="px-3 py-4 sm:px-4 sm:py-5 align-top">
                   {item.order_number && (
-                    <div className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2 py-1 rounded inline-block mb-1">
+                    <div className="text-[11px] font-black text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2 py-1 rounded-lg inline-block mb-2">
                       № {item.order_number}
                     </div>
                   )}
-                  <div className="font-mono text-xs font-bold text-gray-500 bg-gray-100 px-2 py-1 rounded inline-block mb-1">
+                  <div className="font-mono text-[10px] font-bold text-white/40 bg-white/5 border border-white/5 px-2 py-1 rounded-lg inline-block mb-2 ml-1">
                     #{String(item.id).slice(0, 8)}
                   </div>
-                  <div className="text-sm font-medium text-gray-700">
+                  <div className="text-[13px] font-bold text-white/80">
                     {new Date(item.created_at).toLocaleDateString(
                       language === 'uz' ? 'uz-UZ' : language === 'ru' ? 'ru-RU' : 'en-US'
                     )}
                   </div>
                 </td>
-                <td className="px-3 py-3 sm:px-4 sm:py-4 font-medium text-gray-900 align-top min-w-0">
-                  <div className="font-bold">{item.customer_name || item.customers?.name || t('common.unknown')}</div>
-                  <div className="text-xs text-gray-500 font-mono mt-0.5">{item.customer_phone || item.customers?.phone}</div>
+                <td className="px-3 py-4 sm:px-4 sm:py-5 font-medium text-white align-top min-w-0">
+                  <div className="font-bold text-[14px]">{item.customer_name || item.customers?.name || t('common.unknown')}</div>
+                  <div className="text-[11px] text-white/50 font-mono mt-1 font-bold">{item.customer_phone || item.customers?.phone}</div>
+                  {item.customer_address && (
+                    <div className="text-[10px] text-white/40 mt-1 italic line-clamp-2" title={item.customer_address}>
+                      {item.customer_address}
+                    </div>
+                  )}
                   {item.note && (
-                    <div className="text-xs text-amber-600 italic mt-1 bg-amber-50 px-2 py-0.5 rounded inline-block">
+                    <div className="text-[11px] text-amber-400 mt-2 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-xl inline-block max-w-[200px] whitespace-normal break-words">
                       {item.note}
                     </div>
                   )}
                 </td>
-                <td className="px-3 py-3 sm:px-4 sm:py-4 text-gray-600 align-top min-w-0 max-w-md xl:max-w-xl 2xl:max-w-2xl">
+                <td className="px-3 py-4 sm:px-4 sm:py-5 text-white/70 align-top min-w-0 max-w-md xl:max-w-xl 2xl:max-w-2xl">
                   {item.order_items && item.order_items.length > 0 ? (
                     (() => {
                       const ois = normalizeOrderItemsForList(
@@ -169,29 +175,29 @@ export default function OrdersTable({
                           {visible.map((oi, idx) => (
                             <div
                               key={oi.id || idx}
-                              className="text-base border-b border-gray-100 last:border-0 pb-1 mb-1 last:mb-0"
+                              className="text-[13px] border-b border-white/5 last:border-0 pb-2 mb-2 last:mb-0 last:pb-0"
                             >
-                              <div className="flex items-start gap-2.5 min-w-0">
+                              <div className="flex items-start gap-3 min-w-0">
                                 {oi.image_url ? (
-                                  <div className={`shrink-0 rounded-lg bg-white flex items-center justify-center overflow-hidden ring-1 ring-gray-200/60 ${formImageCellClass}`}>
+                                  <div className={`shrink-0 rounded-xl bg-white/5 flex items-center justify-center overflow-hidden ring-1 ring-white/10 ${formImageCellClass}`}>
                                     <img
                                       src={oi.image_url}
                                       alt=""
-                                      className="max-h-full max-w-full object-contain object-center mix-blend-multiply"
+                                      className="max-h-full max-w-full object-contain object-center"
                                     />
                                   </div>
                                 ) : (
-                                  <div className={`shrink-0 rounded-lg border border-dashed border-gray-200/90 bg-white ${formImageCellClass}`} />
+                                  <div className={`shrink-0 rounded-xl border border-dashed border-white/20 bg-white/5 ${formImageCellClass}`} />
                                 )}
                                 <div className="min-w-0 flex-1">
-                                  <div className="font-medium text-gray-800 line-clamp-1">
+                                  <div className="font-bold text-white line-clamp-1">
                                     {oi.product_name || oi.products?.name}
                                   </div>
-                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
-                                    <span className="font-bold text-blue-700 text-lg tabular-nums">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+                                    <span className="font-black text-blue-400 text-lg tabular-nums bg-blue-500/10 px-2 py-0.5 rounded-lg border border-blue-500/20 leading-none">
                                       {orderItemQtyDisplay(oi, products)}
                                     </span>
-                                    <div className="text-xs text-gray-600 flex flex-wrap gap-x-2 gap-y-0.5 font-medium">
+                                    <div className="text-[11px] text-white/50 flex flex-wrap gap-x-2 gap-y-1 font-bold">
                                       {oi.size && (
                                         <span>
                                           {t('orders.productCode')}: {oi.size}
@@ -210,10 +216,10 @@ export default function OrdersTable({
                                     </div>
                                   </div>
                                   {orderItemLineNoteText(oi) && (
-                                    <div className="mt-1.5 w-full text-xs text-violet-900 leading-snug break-words border-l-2 border-violet-300 pl-2 py-0.5 bg-violet-50/80 rounded-r">
-                                      <span className="font-semibold text-violet-700">
+                                    <div className="mt-2 w-full text-[11px] text-violet-300 leading-snug break-words border-l-2 border-violet-500/30 pl-3 py-1.5 bg-violet-500/10 rounded-r-xl">
+                                      <span className="font-black text-violet-400 uppercase tracking-widest text-[9px] block mb-0.5">
                                         {t('orders.lineItemNoteShort')}
-                                      </span>{' '}
+                                      </span>
                                       {orderItemLineNoteText(oi)}
                                     </div>
                                   )}
@@ -230,7 +236,7 @@ export default function OrdersTable({
                                   [item.id]: !prev[item.id]
                                 }))
                               }
-                              className="mt-1 flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline"
+                              className="mt-2 flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-blue-400 hover:text-blue-300 transition-colors bg-blue-500/5 hover:bg-blue-500/10 px-3 py-1.5 rounded-xl self-start w-fit"
                             >
                               {expanded ? (
                                 <>
@@ -241,7 +247,7 @@ export default function OrdersTable({
                                 <>
                                   <ChevronDown size={14} className="shrink-0" />
                                   {t('orders.orderListExpand')}
-                                  <span className="font-normal text-gray-500">
+                                  <span className="font-bold text-blue-400/50 ml-1">
                                     ({t('orders.orderListHiddenCount').replace('{n}', String(hiddenCount))})
                                   </span>
                                 </>
@@ -252,15 +258,15 @@ export default function OrdersTable({
                       );
                     })()
                   ) : (
-                    <span className="text-gray-400 italic text-xs">{t('orders.tableLineEmpty')}</span>
+                    <span className="text-white/30 italic text-[11px] block mt-1">{t('orders.tableLineEmpty')}</span>
                   )}
                 </td>
-                <td className="px-2 py-3 sm:px-3 sm:py-4 font-bold text-gray-900 font-mono align-top whitespace-nowrap tabular-nums">
+                <td className="px-2 py-4 sm:px-3 sm:py-5 font-black text-white font-mono align-top whitespace-nowrap tabular-nums text-lg">
                   ${formatUsd(item.total)}
                 </td>
-                <td className="px-2 py-3 sm:px-3 sm:py-4 align-top">
-                  <div className="flex flex-col gap-1 text-xs">
-                    <span className="font-medium text-gray-600 bg-gray-100 px-2 py-1 rounded inline-block text-center">
+                <td className="px-2 py-4 sm:px-3 sm:py-5 align-top">
+                  <div className="flex flex-col gap-1.5 text-xs">
+                    <span className="font-black text-[10px] uppercase tracking-widest text-white/50 bg-white/5 border border-white/5 px-2 py-1.5 rounded-lg inline-block text-center w-fit">
                       {item.payment_method_detail || t('orders.cash')}
                     </span>
                     {item.receipt_url && (
@@ -268,7 +274,7 @@ export default function OrdersTable({
                         href={item.receipt_url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-blue-600 hover:text-blue-700 hover:underline flex items-center justify-center gap-1 mt-1 font-bold"
+                        className="text-blue-400 hover:text-blue-300 transition-colors flex items-center justify-center gap-1.5 mt-1 font-bold text-[11px] bg-blue-500/10 border border-blue-500/20 px-2 py-1 rounded-lg w-fit"
                       >
                         <FileText size={12} />
                         {t('orders.receiptLink')}
@@ -276,136 +282,81 @@ export default function OrdersTable({
                     )}
                   </div>
                 </td>
-                <td className="px-2 py-3 sm:px-3 sm:py-4 align-top">
+                <td className="px-2 py-4 sm:px-3 sm:py-5 align-top">
                   <select
                     value={normalizeStatusForSelect(item.status)}
                     onChange={(e) => handleStatusChange(item.id, e.target.value)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border-0 cursor-pointer outline-none transition-colors ${
-                      item.status === 'new' || item.status === 'Yangi' ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' :
-                      item.status === 'pending' || item.status === 'Jarayonda' ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200' :
-                      item.status === 'completed' || item.status === 'Tugallandi' || item.status === 'Tugallangan' ? 'bg-green-100 text-green-700 hover:bg-green-200' :
-                      'bg-red-100 text-red-700 hover:bg-red-200'
+                    className={`px-3 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest border border-white/5 cursor-pointer outline-none transition-colors appearance-none text-center ${
+                      item.status === 'new' || item.status === 'Yangi' ? 'bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 border-cyan-500/20' :
+                      item.status === 'pending' || item.status === 'Jarayonda' ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 border-amber-500/20' :
+                      item.status === 'completed' || item.status === 'Tugallandi' || item.status === 'Tugallangan' ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border-emerald-500/20' :
+                      'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border-rose-500/20'
                     }`}
                   >
-                    <option value="new">{t('orders.statusNew')}</option>
-                    <option value="pending">{t('orders.statusProcessing')}</option>
-                    <option value="completed">{t('orders.statusCompleted')}</option>
-                    <option value="cancelled">{t('orders.statusCancelled')}</option>
+                    <option value="new" className="bg-[#1a1a25]">{t('orders.statusNew')}</option>
+                    <option value="pending" className="bg-[#1a1a25]">{t('orders.statusProcessing')}</option>
+                    <option value="completed" className="bg-[#1a1a25]">{t('orders.statusCompleted')}</option>
+                    <option value="cancelled" className="bg-[#1a1a25]">{t('orders.statusCancelled')}</option>
                   </select>
                 </td>
-                <td className="px-2 py-3 sm:px-3 sm:py-4 align-top">
-                  <span
-                    className={`text-[10px] uppercase font-bold px-2 py-1 rounded-lg ${
-                      item.source === 'website'
-                        ? 'bg-indigo-100 text-indigo-700'
+                <td className="px-2 py-4 sm:px-3 sm:py-5 align-top">
+                  <div className="flex flex-col gap-2">
+                    <span
+                      className={`text-[9px] uppercase font-black px-2 py-1 rounded-md tracking-widest w-fit border ${
+                        item.source === 'website'
+                          ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
+                          : item.source === 'telefon'
+                            ? 'bg-orange-500/10 text-orange-400 border-orange-500/20'
+                            : 'bg-white/5 text-white/50 border-white/10'
+                      }`}
+                    >
+                      {item.source === 'website'
+                        ? 'Web'
                         : item.source === 'telefon'
-                          ? 'bg-amber-100 text-amber-800'
-                          : 'bg-gray-100 text-gray-600'
-                    }`}
-                  >
-                    {item.source === 'website'
-                      ? 'Web'
-                      : item.source === 'telefon'
-                        ? t('orders.sourcePhoneShort')
-                        : t('orders.sourceStoreShort')}
-                  </span>
-                  {erpInboundStatus && (
-                    <div className="mt-1">
+                          ? t('orders.sourcePhoneShort')
+                          : t('orders.sourceStoreShort')}
+                    </span>
+                    {erpInboundStatus && (
                       <span
-                        className={`text-[10px] uppercase font-bold px-2 py-1 rounded-lg ${
+                        className={`text-[9px] uppercase font-black px-2 py-1 rounded-md tracking-widest w-fit border ${
                           erpInboundStatus === 'accepted'
-                            ? 'bg-emerald-100 text-emerald-700'
+                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                             : erpInboundStatus === 'rejected'
-                              ? 'bg-rose-100 text-rose-700'
-                              : 'bg-amber-100 text-amber-800'
+                              ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                              : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                         }`}
                       >
                         ERP: {erpInboundStatus === 'accepted' ? 'qabul' : erpInboundStatus === 'rejected' ? 'rad' : 'kutilmoqda'}
                       </span>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </td>
-                <td className="px-2 py-3 sm:px-3 sm:py-4 text-right align-top">
-                  <div className="flex items-center justify-end gap-0.5 sm:gap-1 flex-nowrap sm:flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() => handlePrintOrder(item, true)}
-                      className="shrink-0 p-1.5 sm:p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-                      title={t('orders.printWithPrices')}
-                    >
-                      <Receipt size={18} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handlePrintOrder(item, false)}
-                      className="shrink-0 p-1.5 sm:p-2 text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
-                      title={t('orders.printNoPrices')}
-                    >
-                      <List size={18} />
-                    </button>
+                <td className="px-2 py-4 sm:px-3 sm:py-5 text-right align-top">
+                  <div className="flex items-center justify-end gap-1.5 sm:gap-2 flex-nowrap sm:flex-wrap">
                     {ordersListView === 'active' ? (
                       <>
                         <button
                           type="button"
-                          onClick={() => !partialDisabled && handlePartialShip?.(item)}
-                          disabled={partialDisabled}
-                          className={`inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1.5 sm:px-2.5 sm:py-2 text-[11px] sm:text-xs font-bold transition-colors ${
-                            partialDisabled
-                              ? 'border border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed'
-                              : 'border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
-                          }`}
-                          title={t('orders.partialShipAction')}
+                          onClick={() => window.location.href=`/statistika?orderId=${item.id}&customerId=${item.customer_id}`}
+                          className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 px-2.5 py-2 sm:px-3 sm:py-2.5 text-[10px] sm:text-[11px] font-black uppercase tracking-widest text-amber-400 shadow-lg shadow-amber-500/10 transition-all hover:bg-amber-500/20 hover:text-white"
+                          title="Solishtirish"
                         >
-                          <Truck size={15} className="shrink-0 sm:w-4 sm:h-4" />
-                          <span className="hidden lg:inline">{t('orders.partialShipShort')}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            !erpInboundDisabled &&
-                            handleErpRetailInbound?.(item, { forceResend: isRejectedForResend })
-                          }
-                          disabled={erpInboundDisabled}
-                          className={`inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1.5 sm:px-2.5 sm:py-2 text-[11px] sm:text-xs font-bold transition-colors ${
-                            erpInboundDisabled
-                              ? 'border border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed'
-                              : isRejectedForResend
-                                ? 'border border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100'
-                                : 'border border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'
-                          }`}
-                          title={
-                            isRejectedForResend
-                              ? 'ERPda rad etilgan so‘rovni qayta yuborish'
-                              : erpInboundStatus === 'pending'
-                                ? 'ERPda kutilayotgan so‘rov bor'
-                                : 'ERP «Keltirilgan»ga jo‘natish — qabul qilingach do‘kon zaxirasi to‘ldiriladi'
-                          }
-                        >
-                          <Warehouse size={15} className="shrink-0 sm:w-4 sm:h-4" />
-                          <span className="hidden xl:inline">{erpButtonLabel}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleDuplicateOrder(item)}
-                          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2 py-1.5 sm:px-2.5 sm:py-2 text-[11px] sm:text-xs font-bold text-violet-900 transition-colors hover:bg-violet-100"
-                          title={t('orders.duplicateOrderTitle')}
-                        >
-                          <Copy size={15} className="shrink-0 sm:w-4 sm:h-4" />
-                          <span className="hidden lg:inline">{t('orders.duplicateOrder')}</span>
+                          <RefreshCcw size={14} className="shrink-0" />
+                          <span className="hidden sm:inline">Solishtirish</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => handleEdit(item)}
-                          className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-blue-600 px-2 py-1.5 sm:px-3 sm:py-2 text-[11px] sm:text-xs font-bold text-white shadow-md shadow-blue-600/25 transition-colors hover:bg-blue-700"
+                          className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-blue-600/20 border border-blue-500/30 px-2.5 py-2 sm:px-3 sm:py-2.5 text-[10px] sm:text-[11px] font-black uppercase tracking-widest text-blue-400 shadow-lg shadow-blue-500/10 transition-all hover:bg-blue-500/30 hover:text-white"
                           title={t('orders.editOrder')}
                         >
-                          <Edit size={15} className="shrink-0 sm:w-4 sm:h-4" />
+                          <Edit size={14} className="shrink-0" />
                           <span className="hidden sm:inline">{t('common.edit')}</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => handleDelete(item.id)}
-                          className="shrink-0 p-1.5 sm:p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          className="shrink-0 p-2 sm:p-2.5 text-rose-400 hover:text-white bg-rose-500/10 hover:bg-rose-500/30 rounded-xl transition-all border border-rose-500/20"
                           title={t('orders.moveToTrashTitle')}
                         >
                           <Trash2 size={18} />
@@ -416,16 +367,16 @@ export default function OrdersTable({
                         <button
                           type="button"
                           onClick={() => handleRestoreOrder(item.id)}
-                          className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-green-600 px-2 py-1.5 sm:px-3 sm:py-2 text-[11px] sm:text-xs font-bold text-white shadow-md shadow-green-600/25 transition-colors hover:bg-green-700"
+                          className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-emerald-600/20 border border-emerald-500/30 px-2.5 py-2 sm:px-3 sm:py-2.5 text-[10px] sm:text-[11px] font-black uppercase tracking-widest text-emerald-400 shadow-lg shadow-emerald-500/10 transition-all hover:bg-emerald-500/30 hover:text-white"
                           title={t('orders.restoreOrderTitle')}
                         >
-                          <RotateCcw size={15} className="shrink-0 sm:w-4 sm:h-4" />
+                          <RotateCcw size={14} className="shrink-0" />
                           <span className="hidden sm:inline">{t('orders.restoreOrder')}</span>
                         </button>
                         <button
                           type="button"
                           onClick={() => handlePermanentDelete(item.id)}
-                          className="shrink-0 p-1.5 sm:p-2 text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                          className="shrink-0 p-2 sm:p-2.5 text-rose-500 hover:text-white bg-rose-500/10 hover:bg-rose-600/40 rounded-xl transition-all border border-rose-500/20"
                           title={t('orders.permanentDeleteTitle')}
                         >
                           <Trash2 size={18} />

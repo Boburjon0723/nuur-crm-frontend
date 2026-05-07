@@ -5,9 +5,10 @@
  * @returns {Promise<T>}
  */
 export function withTimeout(promise, ms, message = "So'rov vaqti tugadi.") {
+    const p = Promise.resolve(promise)
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(message)), ms)
-        promise.then(
+        p.then(
             (value) => {
                 clearTimeout(timer)
                 resolve(value)

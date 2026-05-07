@@ -1,33 +1,17 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
-import { supabase } from '@/lib/supabase'
-import { 
-    Building2, 
-    ChevronRight, 
-    ChevronLeft, 
-    Layers, 
-    History, 
-    TrendingDown, 
-    Loader2, 
-    ArrowRight,
-    Search
-} from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Building2, ChevronRight, ArrowRightLeft, Clock, Loader2, ArrowLeft, Layers, History } from 'lucide-react'
 import { useLanguage } from '@/context/LanguageContext'
-import { 
-    normalizeFinCurrency, 
-    formatFinAmount, 
-    rollupDepartmentTotals, 
-    directDeptTotalsByCurrency 
-} from '@/utils/financeCurrency'
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'
 
 export default function DepartmentsSubView() {
     const { t } = useLanguage()
     const [loading, setLoading] = useState(true)
     const [departments, setDepartments] = useState([])
     const [movements, setMovements] = useState([])
-    const [rawMaterials, setRawMaterials] = useState([])
-    const [stack, setStack] = useState([]) // Array of department IDs for navigation
+    const [selectedDept, setSelectedDept] = useState(null)
 
     useEffect(() => {
         fetchData()
@@ -36,191 +20,131 @@ export default function DepartmentsSubView() {
     async function fetchData() {
         try {
             setLoading(true)
-            const { data: d } = await supabase
-                .from('departments')
-                .select('*')
-                .eq('is_active', true)
-                .order('sort_order', { ascending: true })
+            const token = localStorage.getItem('nuurhome_token') || localStorage.getItem('crm_token')
+            const headers = { 'Authorization': `Bearer ${token}` }
 
-            const { data: m } = await supabase
-                .from('material_movements')
-                .select('*')
+            const [dRes, mRes] = await Promise.all([
+                fetch(`${API_BASE_URL}/finance/departments`, { headers }).then(r => r.json()),
+                fetch(`${API_BASE_URL}/finance/material-movements`, { headers }).then(r => r.json())
+            ])
 
-            const { data: rm } = await supabase
-                .from('raw_materials')
-                .select('id, name_uz')
-
-            setDepartments(d || [])
-            setMovements(m || [])
-            setRawMaterials(rm || [])
+            setDepartments(Array.isArray(dRes) ? dRes : (dRes.data || []))
+            setMovements(Array.isArray(mRes) ? mRes : (mRes.data || []))
         } catch (error) {
-            console.error('Error fetching departments data:', error)
+            console.error('Error fetching department data:', error)
         } finally {
             setLoading(false)
         }
     }
 
-    const currentDeptId = stack.length > 0 ? stack[stack.length - 1] : null
-
-    // Calculate totals matching desktop rollup logic
-    const rolledTotals = useMemo(() => {
-        const { UZS, USD } = directDeptTotalsByCurrency(movements)
-        return {
-            UZS: rollupDepartmentTotals(departments, UZS),
-            USD: rollupDepartmentTotals(departments, USD)
-        }
-    }, [departments, movements])
-
-    const currentLevelItems = useMemo(() => {
-        return departments.filter(d => d.parent_id === (currentDeptId || null))
-    }, [departments, currentDeptId])
-
-    const currentDeptMovements = useMemo(() => {
-        if (!currentDeptId) return []
-        return movements
-            .filter(m => m.department_id === currentDeptId)
-            .sort((a, b) => new Date(b.movement_date) - new Date(a.movement_date))
-    }, [movements, currentDeptId])
-
-    const breadcrumbs = useMemo(() => {
-        return stack.map(id => departments.find(d => d.id === id))
-    }, [stack, departments])
-
     if (loading) {
         return (
-            <div className="flex flex-col items-center justify-center p-12 space-y-4 text-slate-400">
-                <Loader2 className="w-8 h-8 animate-spin text-slate-500" />
-                <p className="text-sm font-medium">Bo'limlar yuklanmoqda...</p>
+            <div className="flex flex-col items-center justify-center p-20 space-y-4">
+                <Loader2 className="w-10 h-10 text-[#8B5E3C] animate-spin" />
+                <p className="text-[10px] font-black text-[#2D241E]/20 uppercase tracking-widest">Yuklanmoqda...</p>
+            </div>
+        )
+    }
+
+    if (selectedDept) {
+        const deptMovements = movements.filter(m => m.from_department_id === selectedDept.id || m.to_department_id === selectedDept.id)
+
+        return (
+            <div className="p-6 space-y-8 animate-in fade-in duration-500 bg-[#FDFBF7] min-h-screen">
+                {/* Dept Header */}
+                <div className="p-8 rounded-[2.5rem] bg-[#2D241E] text-white space-y-6 relative overflow-hidden shadow-2xl">
+                    <div className="absolute top-[-20%] right-[-10%] w-32 h-32 bg-[#8B5E3C]/20 blur-[60px] rounded-full" />
+                    
+                    <div className="flex items-center gap-5 relative z-10">
+                        <div className="w-16 h-16 rounded-3xl bg-white/10 flex items-center justify-center border border-white/10 backdrop-blur-md">
+                            <Building2 size={32} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <h3 className="text-xl font-black uppercase italic truncate">{selectedDept.name_uz || selectedDept.name}</h3>
+                            <p className="text-[10px] font-bold text-white/30 uppercase tracking-widest mt-1">Material harakatlari</p>
+                        </div>
+                        <button 
+                            onClick={() => setSelectedDept(null)}
+                            className="w-10 h-10 flex items-center justify-center bg-white/5 rounded-xl text-white/40"
+                        >
+                            <ArrowLeft size={24} />
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="p-5 rounded-[2rem] bg-white/5 border border-white/5">
+                            <p className="text-[9px] font-black text-white/30 uppercase tracking-widest mb-1">Amallar</p>
+                            <h4 className="text-xl font-black italic">{deptMovements.length}</h4>
+                        </div>
+                        <div className="p-5 rounded-[2rem] bg-white/5 border border-white/5">
+                            <p className="text-[9px] font-black text-white/30 uppercase tracking-widest mb-1">Status</p>
+                            <h4 className="text-xl font-black italic text-emerald-400">Faol</h4>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Movements List */}
+                <div className="space-y-4 pb-20">
+                    <div className="flex items-center justify-between px-2">
+                        <h4 className="text-[10px] font-black text-[#2D241E]/30 uppercase tracking-[0.2em]">Harakatlar tarixi</h4>
+                        <History size={14} className="text-[#2D241E]/10" />
+                    </div>
+                    <div className="space-y-3">
+                        {deptMovements.length === 0 ? (
+                            <p className="text-center py-12 text-[#2D241E]/20 text-[10px] font-black uppercase tracking-widest">Harakatlar yo'q</p>
+                        ) : deptMovements.map(m => (
+                            <div key={m.id} className="p-5 rounded-[2rem] bg-white border border-[#E8E2D9] flex flex-col gap-4 shadow-sm">
+                                <div className="flex items-center justify-between">
+                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                                        m.from_department_id === selectedDept.id ? 'bg-[#D44D44]/10 text-[#D44D44]' : 'bg-[#44A678]/10 text-[#44A678]'
+                                    }`}>
+                                        <ArrowRightLeft size={20} />
+                                    </div>
+                                    <span className="text-[9px] font-black text-[#2D241E]/30 tabular-nums">{new Date(m.movement_date).toLocaleDateString()}</span>
+                                </div>
+                                <div>
+                                    <p className="text-[11px] font-black text-[#2D241E] uppercase italic mb-1">{m.material_name}</p>
+                                    <div className="flex items-center gap-2">
+                                        <p className="text-[10px] font-bold text-[#8B5E3C] uppercase tracking-widest">{m.quantity} {m.unit || 'ta'}</p>
+                                        <span className="text-[#E8E2D9]">|</span>
+                                        <p className="text-[9px] font-black text-[#2D241E]/40 uppercase">
+                                            {m.from_department_id === selectedDept.id ? 'CHIQIM' : 'KIRIM'}
+                                        </p>
+                                    </div>
+                                </div>
+                                <p className="text-[9px] text-[#2D241E]/40 italic border-t border-[#F7F5F0] pt-3">{m.note || 'Izohsiz'}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
             </div>
         )
     }
 
     return (
         <div className="p-6 space-y-6">
-            <div className="flex items-center justify-between mb-2">
-                <h2 className="text-xl font-bold text-white">Bo'limlar tahlili</h2>
+            <div className="flex items-center justify-between px-1">
+                <h2 className="text-[10px] font-black text-[#2D241E]/20 uppercase tracking-[0.3em]">Bo'limlar Ro'yxati</h2>
+                <Layers size={14} className="text-[#2D241E]/10" />
             </div>
-
-            {/* Breadcrumbs */}
-            <nav className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
-                <button 
-                    onClick={() => setStack([])}
-                    className={`text-xs font-bold whitespace-nowrap px-3 py-1.5 rounded-full transition-all ${
-                        stack.length === 0 ? 'bg-indigo-500 text-white' : 'bg-white/5 text-slate-500 hover:text-slate-300'
-                    }`}
-                >
-                    Asosiy
-                </button>
-                {breadcrumbs.map((dept, i) => (
-                    <div key={dept.id} className="flex items-center gap-2 shrink-0">
-                        <ChevronRight size={14} className="text-slate-700" />
-                        <button 
-                            onClick={() => setStack(stack.slice(0, i + 1))}
-                            className={`text-xs font-bold whitespace-nowrap px-3 py-1.5 rounded-full transition-all ${
-                                i === stack.length - 1 ? 'bg-indigo-500 text-white' : 'bg-white/5 text-slate-500'
-                            }`}
-                        >
-                            {dept.name_uz}
-                        </button>
+            <div className="grid gap-4 pb-20">
+                {departments.map(d => (
+                    <div 
+                        key={d.id}
+                        onClick={() => setSelectedDept(d)}
+                        className="bg-white border border-[#E8E2D9] rounded-[2rem] p-6 flex items-center gap-5 shadow-sm active:scale-[0.98] transition-all group"
+                    >
+                        <div className="w-14 h-14 rounded-2xl bg-[#F7F5F0] text-[#8B5E3C] flex items-center justify-center border border-[#E8E2D9]">
+                            <Building2 size={26} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <h3 className="text-[13px] font-black text-[#2D241E] uppercase italic truncate">{d.name_uz || d.name}</h3>
+                            <p className="text-[9px] font-bold text-[#2D241E]/30 uppercase tracking-widest mt-1">Material tahlili</p>
+                        </div>
+                        <ChevronRight size={20} className="text-[#E8E2D9] group-hover:text-[#8B5E3C] transition-colors" />
                     </div>
                 ))}
-            </nav>
-
-            {/* List of Departments (at current level) */}
-            <div className="space-y-3">
-                {currentLevelItems.length > 0 ? (
-                    currentLevelItems.map(d => {
-                        const uzs = rolledTotals.UZS[d.id] || 0
-                        const usd = rolledTotals.USD[d.id] || 0
-                        const hasSub = departments.some(sub => sub.parent_id === d.id)
-
-                        return (
-                            <div 
-                                key={d.id}
-                                onClick={() => setStack([...stack, d.id])}
-                                className="p-5 rounded-3xl bg-white/5 border border-white/5 hover:bg-white/10 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-4 group shadow-lg"
-                            >
-                                <div className="w-12 h-12 rounded-2xl bg-slate-500/10 text-slate-400 flex items-center justify-center shrink-0">
-                                    <Layers size={22} />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <h3 className="text-sm font-bold text-white transition-colors">{d.name_uz}</h3>
-                                    <div className="flex items-center gap-3 text-[10px] font-bold mt-1 tracking-tighter">
-                                        <span className="text-emerald-400/80">{uzs.toLocaleString()} UZS</span>
-                                        {usd > 0 && (
-                                            <>
-                                                <span className="w-1 h-1 rounded-full bg-slate-700" />
-                                                <span className="text-indigo-400/80">${usd.toLocaleString()}</span>
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
-                                {hasSub ? (
-                                    <div className="flex items-center gap-1">
-                                        <span className="text-[10px] font-bold text-slate-600 uppercase tracking-tighter">Ichki</span>
-                                        <ChevronRight size={18} className="text-slate-700 group-hover:text-slate-400 transition-colors" />
-                                    </div>
-                                ) : (
-                                    <div className="flex items-center gap-1">
-                                         <span className="text-[10px] font-bold text-emerald-600/50 uppercase tracking-tighter">Oxirgi</span>
-                                         <ArrowRight size={18} className="text-slate-800" />
-                                    </div>
-                                )}
-                            </div>
-                        )
-                    })
-                ) : !currentDeptId && (
-                    <p className="text-center py-12 text-slate-500 text-sm italic">Bo'limlar topilmadi</p>
-                )}
             </div>
-
-            {/* Expense History for selected department */}
-            {currentDeptId && (
-                <div className="space-y-4 pt-4 border-t border-white/5">
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-slate-400">
-                            <History size={16} />
-                            <h4 className="text-xs font-bold uppercase tracking-widest px-1">Xarajatlar tarixi</h4>
-                        </div>
-                    </div>
-
-                    <div className="space-y-3">
-                        {currentDeptMovements.length > 0 ? (
-                            currentDeptMovements.map(m => {
-                                const material = rawMaterials.find(rm => rm.id === m.raw_material_id)
-                                return (
-                                    <div key={m.id} className="p-4 rounded-2xl bg-white/5 border border-white/5 flex items-center gap-4">
-                                        <div className="w-10 h-10 rounded-xl bg-orange-500/10 text-orange-400 flex items-center justify-center shrink-0">
-                                            <TrendingDown size={20} />
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-bold text-white truncate">
-                                                {material ? material.name_uz : 'Noma\'lum xarajat'}
-                                            </p>
-                                            <div className="flex items-center gap-2 text-[10px] font-medium text-slate-500">
-                                                <p>{m.movement_date}</p>
-                                                <span>•</span>
-                                                <p>{m.quantity?.toLocaleString() || 1} Dona</p>
-                                            </div>
-                                        </div>
-                                        <div className="text-right">
-                                            <p className="text-sm font-bold tabular-nums text-rose-400">
-                                                -{normalizeFinCurrency(m.currency) === 'USD' ? '$' : ''}
-                                                {Number(m.total_cost).toLocaleString()}
-                                            </p>
-                                            {m.note && <p className="text-[10px] text-slate-600 truncate max-w-[80px]">{m.note}</p>}
-                                        </div>
-                                    </div>
-                                )
-                            })
-                        ) : (
-                            <div className="text-center py-8 bg-white/5 rounded-3xl border border-dashed border-white/10">
-                                <p className="text-xs text-slate-500 italic">Hozircha xarajatlar yo'q</p>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            )}
         </div>
     )
 }

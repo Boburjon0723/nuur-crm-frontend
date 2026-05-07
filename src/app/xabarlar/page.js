@@ -6,7 +6,7 @@ import Header from '@/components/Header'
 import { useLayout } from '@/context/LayoutContext'
 import { useLanguage } from '@/context/LanguageContext'
 import { useDialog } from '@/context/DialogContext'
-import { supabase } from '@/lib/supabase'
+import { messageAPI } from '@/services/techgear-api'
 
 export default function Xabarlar() {
     const { toggleSidebar } = useLayout()
@@ -18,37 +18,12 @@ export default function Xabarlar() {
 
     useEffect(() => {
         loadMessages()
-
-        // Real-time subscription for new messages
-        const subscription = supabase
-            .channel('contact_messages_changes')
-            .on('postgres_changes',
-                { event: '*', schema: 'public', table: 'contact_messages' },
-                () => {
-                    loadMessages()
-                }
-            )
-            .subscribe()
-
-        return () => {
-            subscription.unsubscribe()
-        }
     }, [filter])
 
     async function loadMessages() {
         try {
-            let query = supabase
-                .from('contact_messages')
-                .select('*')
-                .order('created_at', { ascending: false })
-
-            if (filter !== 'all') {
-                query = query.eq('status', filter)
-            }
-
-            const { data, error } = await query
-
-            if (error) throw error
+            setLoading(true)
+            const data = await messageAPI.getMessages(filter)
             setMessages(data || [])
         } catch (error) {
             console.error('Error loading messages:', error)
@@ -61,12 +36,7 @@ export default function Xabarlar() {
         if (!confirm(t('messages.deleteConfirm'))) return
 
         try {
-            const { error } = await supabase
-                .from('contact_messages')
-                .delete()
-                .eq('id', id)
-
-            if (error) throw error
+            await messageAPI.deleteMessage(id)
             loadMessages()
         } catch (error) {
             console.error('Error deleting message:', error)
@@ -76,20 +46,7 @@ export default function Xabarlar() {
 
     async function handleStatusChange(id, newStatus) {
         try {
-            const updateData = { status: newStatus }
-
-            if (newStatus === 'read') {
-                updateData.read_at = new Date().toISOString()
-            } else if (newStatus === 'replied') {
-                updateData.replied_at = new Date().toISOString()
-            }
-
-            const { error } = await supabase
-                .from('contact_messages')
-                .update(updateData)
-                .eq('id', id)
-
-            if (error) throw error
+            await messageAPI.updateMessageStatus(id, newStatus)
             loadMessages()
         } catch (error) {
             console.error('Error updating message:', error)

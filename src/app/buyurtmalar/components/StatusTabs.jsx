@@ -8,45 +8,40 @@ export default function StatusTabs({ t, filterStatus, setFilterStatus, statusSta
             id: 'all', 
             label: t('orders.allStatuses'), 
             icon: LayoutGrid, 
-            color: 'bg-slate-100 text-slate-600',
-            activeColor: 'bg-slate-600 text-white shadow-slate-200'
+            activeColor: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30'
         },
         { 
             id: 'new', 
             label: t('orders.statusNew'), 
             icon: Clock, 
             count: statusStats.new.count,
-            color: 'bg-blue-50 text-blue-600',
-            activeColor: 'bg-blue-600 text-white shadow-blue-200'
+            activeColor: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30'
         },
         { 
             id: 'pending', 
             label: t('orders.statusProcessing'), 
             icon: Timer, 
             count: statusStats.pending.count,
-            color: 'bg-amber-50 text-amber-600',
-            activeColor: 'bg-amber-600 text-white shadow-amber-200'
+            activeColor: 'bg-amber-500/20 text-amber-400 border-amber-500/30'
         },
         { 
             id: 'completed', 
             label: t('orders.statusCompleted'), 
             icon: CheckCircle, 
             count: statusStats.completed.count,
-            color: 'bg-emerald-50 text-emerald-600',
-            activeColor: 'bg-emerald-600 text-white shadow-emerald-200'
+            activeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
         },
         { 
             id: 'cancelled', 
             label: t('orders.statusCancelled'), 
             icon: XCircle, 
             count: statusStats.cancelled.count,
-            color: 'bg-rose-50 text-rose-600',
-            activeColor: 'bg-rose-600 text-white shadow-rose-200'
+            activeColor: 'bg-rose-500/20 text-rose-400 border-rose-500/30'
         }
     ];
 
     return (
-        <div className="flex flex-wrap gap-2 mb-6 p-1 bg-white/50 backdrop-blur-sm rounded-2xl border border-gray-100 shadow-sm w-fit">
+        <div className="flex flex-wrap gap-2 mb-8 p-1.5 bg-[#12121a]/60 backdrop-blur-xl rounded-[20px] border border-white/5 shadow-2xl w-fit">
             {tabs.map((tab) => {
                 const Icon = tab.icon;
                 const isActive = filterStatus === tab.id;
@@ -57,19 +52,21 @@ export default function StatusTabs({ t, filterStatus, setFilterStatus, statusSta
                         type="button"
                         onClick={() => setFilterStatus(tab.id)}
                         className={`
-                            relative flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all duration-200
+                            relative flex items-center gap-2.5 px-5 py-3 rounded-2xl text-[13px] font-bold transition-all duration-300
                             ${isActive 
-                                ? `${tab.activeColor} shadow-lg scale-[1.02] z-10` 
-                                : `text-gray-500 hover:bg-white hover:text-gray-700`
+                                ? `${tab.activeColor} border shadow-[0_0_20px_rgba(0,0,0,0.3)] scale-[1.02] z-10` 
+                                : `text-white/40 hover:text-white/80 hover:bg-white/5`
                             }
                         `}
                     >
-                        <Icon size={18} className={isActive ? 'text-white' : ''} />
-                        <span>{tab.label}</span>
+                        <div className={`p-1.5 rounded-lg ${isActive ? 'bg-current/10' : ''}`}>
+                            <Icon size={16} />
+                        </div>
+                        <span className="tracking-wide">{tab.label}</span>
                         {(tab.count !== undefined) && (
                             <span className={`
-                                ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-black tabular-nums
-                                ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-500'}
+                                ml-1 px-2 py-0.5 rounded-full text-[10px] font-black tabular-nums
+                                ${isActive ? 'bg-current/20 text-current' : 'bg-white/5 text-white/30'}
                             `}>
                                 {tab.count}
                             </span>

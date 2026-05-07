@@ -6,9 +6,13 @@ import { supabase } from '@/lib/supabase'
 import { sendTelegramNotification } from '@/utils/telegram'
 import { formatUsd } from '@/utils/formatters'
 import { normalizeModelKey } from '@/utils/validators'
-import { deductStockForCompletedOrder, reverseStockForOrder } from '@/services/inventoryService'
+import { createErpInboundPendingRequest } from '@/services/erpInboundRequestsService'
 
 import Header from '@/components/Header'
+import { api } from '@/utils/api'
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+
 import {
     Plus,
     X,
@@ -22,7 +26,6 @@ import {
 import { useLayout } from '@/context/LayoutContext'
 import { useLanguage } from '@/context/LanguageContext'
 import { useDialog } from '@/context/DialogContext'
-import { isDeletedAtMissingError } from '@/lib/orderTrash'
 
 import {
     escapeHtml,
@@ -31,8 +34,6 @@ import {
     orderItemLineNoteText,
     mergeLineNotes,
     isSchemaOrEmbedError,
-    fetchOrdersPageWithFallback,
-    fetchDeletedOrdersPageWithFallback,
     fetchOrderItemsForOrderId,
     fetchOrderItemsForOrderIds,
     normalizeOrderItemColorKey,
@@ -40,6 +41,7 @@ import {
     productNameFields,
     productDescriptionFields,
     normalizeColorsArray,
+    normalizeImagesArray,
     labelColorCanonical,
     expandOrderLineForSubmit,
     LS_LAST_ORDER,
@@ -94,7 +96,10 @@ import {
     orderCategoryLabels,
     filterOrderItemsByCategoryLabel,
     buildOrderFormTableRows,
-    buildConsolidatedPrintHtml
+    buildConsolidatedPrintHtml,
+    fetchOrdersPageWithFallback,
+    fetchDeletedOrdersPageWithFallback,
+    restoreOrder
 } from './utils'
 
 import StatsCards from './components/StatsCards'
@@ -152,6 +157,7 @@ function BuyurtmalarPageContent() {
         customer_id: '',
         customer_name: '',
         customer_phone: '',
+        customer_address: '',
         total: '',
         status: 'new',
         note: '',
@@ -187,6 +193,61 @@ function BuyurtmalarPageContent() {
     const editLoadSeqRef = useRef(0)
     const excelImportInputRef = useRef(null)
     const [excelImportBusy, setExcelImportBusy] = useState(false)
+
+    function normalizeProductsForOrdersFromBackend(rows) {
+        return (rows || []).map((p) => {
+            const images = normalizeImagesArray(p)
+            const imagePrimary = images[0] || ''
+            const colors = normalizeColorsArray(p)
+            
+            return {
+                ...p,
+                // Buyurtmalar sahifasi kutadigan maydonlar (legacy/supabase formati bilan mos)
+                size: String(p?.sku || p?.size || '').trim(),
+                sale_price: Number(p?.price ?? p?.sale_price ?? 0) || 0,
+                image_url: String(p?.image_url || imagePrimary || '').trim(),
+                color: String(p?.color || colors[0] || '').trim(),
+                colors,
+                category_id: p?.categoryId ?? p?.category_id ?? null,
+                categories: p?.category
+                    ? {
+                          id: p.category.id,
+                          name: p.category.name || p.category.name_uz || '',
+                          name_uz: p.category.name_uz || p.category.name || ''
+                      }
+                    : p?.categories || null
+            }
+        })
+    }
+
+    function normalizeOrdersFromBackend(rows) {
+        return (rows || []).map((o) => ({
+            ...o,
+            order_items: (o?.order_items || []).map((oi) => ({
+                ...oi,
+                // Buyurtmalar util funksiyalari `oi.products` maydonini kutadi.
+                products: oi?.products || oi?.product || null
+            }))
+        }))
+    }
+
+    function deriveCustomersFromOrders(rows) {
+        const map = new Map()
+        for (const o of rows || []) {
+            const name = String(o?.customer_name || '').trim()
+            const phone = String(o?.customer_phone || '').trim()
+            const key = `${name}|||${phone}`
+            if (!name && !phone) continue
+            if (!map.has(key)) {
+                map.set(key, {
+                    id: key,
+                    name,
+                    phone
+                })
+            }
+        }
+        return Array.from(map.values()).sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+    }
 
     useEffect(() => {
         formRef.current = form
@@ -305,8 +366,12 @@ function BuyurtmalarPageContent() {
 
     async function loadTrashOrders() {
         const { data, error } = await fetchDeletedOrdersPageWithFallback()
-        if (error) console.error('loadTrashOrders:', error)
+        if (error) {
+            console.error('loadTrashOrders:', error)
+            return
+        }
         setTrashOrders(data || [])
+        setTrashOrderCount(data?.length || 0)
     }
 
     /** `silent: true` — tahrir/o‘chirishdan keyin: ro‘yxat yangilanadi, lekin butun sahifa spinneri yo‘q */
@@ -314,41 +379,39 @@ function BuyurtmalarPageContent() {
         const silent = opts.silent === true
         try {
             if (!silent) setLoading(true)
-
-            const { data: ordersData, error: ordersError } = await fetchOrdersPageWithFallback({ activeOnly: true })
-            if (ordersError) throw ordersError
-
-            let trashCnt = 0
-            const trashCntRes = await supabase
-                .from('orders')
-                .select('id', { count: 'exact', head: true })
-                .not('deleted_at', 'is', null)
-            if (!trashCntRes.error) trashCnt = trashCntRes.count ?? 0
-            else if (!isDeletedAtMissingError(trashCntRes.error)) console.warn('trash count:', trashCntRes.error)
-            setTrashOrderCount(trashCnt)
-
-            // Load Customers for dropdown
-            const { data: customersData } = await supabase.from('customers').select('id, name, phone').order('name')
-
-            // Barcha mahsulotlar — kategoriya nomi forma jadvalida tartib va jami uchun
-            let productsData = null
-            const prWithCat = await supabase
-                .from('products')
-                .select('*, categories(id, name, name_uz)')
-                .order('name')
-            if (prWithCat.error) {
-                console.warn('products+categories:', prWithCat.error)
-                const prFb = await supabase.from('products').select('*').order('name')
-                productsData = prFb.data
-            } else {
-                productsData = prWithCat.data
+            let productsData = []
+            let colorLibData = []
+            try {
+                const [prodRes, colorsRes] = await Promise.all([api.get('/api/products'), api.get('/api/colors')])
+                productsData = normalizeProductsForOrdersFromBackend(prodRes?.data || [])
+                colorLibData = (colorsRes?.data || []).map((c) => ({
+                    ...c,
+                    name_uz: c?.name_uz || c?.name || '',
+                    name_ru: c?.name_ru || c?.name || '',
+                    name_en: c?.name_en || c?.name || '',
+                }))
+                setProducts(productsData)
+                setProductColors(colorLibData)
+            } catch (apiErr) {
+                console.error('orders page API products/colors failed:', apiErr)
+                await showAlert(
+                    "Mahsulotlar va ranglarni backend API'dan yuklab bo'lmadi. Eski Supabase fallback o'chirilgan.",
+                    { variant: 'error' }
+                )
             }
 
-            const { data: colorLibData, error: colorLibError } = await supabase
-                .from('product_colors')
-                .select('*')
-                .order('name')
-            if (colorLibError) console.warn('product_colors:', colorLibError)
+            let ordersData = []
+            try {
+                const ordersRes = await api.get('/api/orders')
+                const rawOrders = ordersRes?.data?.orders || ordersRes?.data || []
+                ordersData = normalizeOrdersFromBackend(rawOrders)
+            } catch (ordersErr) {
+                console.error('orders load error:', ordersErr)
+            }
+
+            // Backend rejimda trash yo'q.
+            setTrashOrderCount(0)
+            const customersData = deriveCustomersFromOrders(ordersData)
 
             // ERPga yuborilgan holat: jadvalda «rad etilgan» ni ko‘rsatish va qayta yuborish.
             const orderIds = (ordersData || []).map((o) => o.id).filter(Boolean)
@@ -372,8 +435,6 @@ function BuyurtmalarPageContent() {
 
             setOrders(ordersData || [])
             setCustomers(customersData || [])
-            setProducts(productsData || [])
-            setProductColors(colorLibData || [])
             setErpInboundByOrder(erpInboundMap)
         } catch (error) {
             console.error('Error loading data:', error)
@@ -410,8 +471,9 @@ function BuyurtmalarPageContent() {
         const raw = (code || '').trim()
         if (!raw) return { list: [], reason: 'empty' }
         const low = normalizeModelKey(raw)
+        const modelKeyOf = (p) => normalizeModelKey(p?.size || p?.sku || '')
 
-        const exactBySize = products.filter((p) => normalizeModelKey(p.size) === low)
+        const exactBySize = products.filter((p) => modelKeyOf(p) === low)
         if (exactBySize.length >= 1) return { list: dedupeProducts(exactBySize), reason: null }
 
         const exactByAnyName = products.filter((p) =>
@@ -424,9 +486,12 @@ function BuyurtmalarPageContent() {
         )
         if (exactByDescription.length >= 1) return { list: dedupeProducts(exactByDescription), reason: null }
 
-        const exactByCategoryText = products.filter(
-            (p) => p.category != null && String(p.category).trim() !== '' && normalizeModelKey(p.category) === low
-        )
+        const exactByCategoryText = products.filter((p) => {
+            const cat = p.categories || p.category
+            if (!cat) return false
+            const names = [cat.name, cat.name_uz, cat.name_ru, cat.name_en, p.category_name]
+            return names.some(n => n && normalizeModelKey(n) === low)
+        })
         if (exactByCategoryText.length >= 1) return { list: dedupeProducts(exactByCategoryText), reason: null }
 
         const minPartial = 3
@@ -434,7 +499,7 @@ function BuyurtmalarPageContent() {
             return { list: [], reason: 'notfound' }
         }
         const partialSize = products.filter((p) => {
-            const sz = normalizeModelKey(p.size)
+            const sz = modelKeyOf(p)
             return sz && sz.includes(low)
         })
         if (partialSize.length === 1) return { list: partialSize, reason: null }
@@ -487,6 +552,7 @@ function BuyurtmalarPageContent() {
                         product_id: product.id,
                         product_name: displayProductName(product),
                         product_price: Number(product.sale_price) || 0,
+                        original_price: Number(product.sale_price) || 0,
                         color: '',
                         image_url: product.image_url || '',
                         resolveError: '',
@@ -501,6 +567,7 @@ function BuyurtmalarPageContent() {
                     product_id: product.id,
                     product_name: displayProductName(product),
                     product_price: Number(product.sale_price) || 0,
+                    original_price: Number(product.sale_price) || 0,
                     color: colorOpts[0] || product.color || '',
                     image_url: product.image_url || '',
                     resolveError: '',
@@ -568,6 +635,7 @@ function BuyurtmalarPageContent() {
                         product_id: p.id,
                         product_name: displayProductName(p),
                         product_price: Number(p.sale_price) || 0,
+                        original_price: Number(p.sale_price) || 0,
                         color: p.color || '',
                         image_url: p.image_url || '',
                         colorChoices: [],
@@ -581,7 +649,7 @@ function BuyurtmalarPageContent() {
                 return
             }
         }
-
+ 
         setOrderLines((prev) =>
             prev.map((l) => {
                 if (l.id !== lineId) return l
@@ -590,6 +658,7 @@ function BuyurtmalarPageContent() {
                     product_id: p.id,
                     product_name: displayProductName(p),
                     product_price: Number(p.sale_price) || 0,
+                    original_price: Number(p.sale_price) || 0,
                     color: p.color || '',
                     image_url: p.image_url || '',
                     colorChoices: [],
@@ -634,7 +703,8 @@ function BuyurtmalarPageContent() {
             const product = list[0]
             const colorOpts = normalizeColorsArray(product)
             let nextLine
-            if (colorOpts.length > 1) {
+            // Har qanday rang massivi bo'lsa (hatto 1 ta bo'lsa ham) matritsa ko'rinishini yoqish
+            if (colorOpts.length >= 1) {
                 nextLine = {
                     ...line,
                     variants: [],
@@ -643,6 +713,7 @@ function BuyurtmalarPageContent() {
                     product_id: product.id,
                     product_name: displayProductName(product),
                     product_price: Number(product.sale_price) || 0,
+                    original_price: Number(product.sale_price) || 0,
                     color: '',
                     image_url: product.image_url || '',
                     resolveError: '',
@@ -658,6 +729,7 @@ function BuyurtmalarPageContent() {
                     product_id: product.id,
                     product_name: displayProductName(product),
                     product_price: Number(product.sale_price) || 0,
+                    original_price: Number(product.sale_price) || 0,
                     color: colorOpts[0] || product.color || '',
                     image_url: product.image_url || '',
                     resolveError: '',
@@ -786,36 +858,7 @@ function BuyurtmalarPageContent() {
                 const totalSum =
                     mergeSourceAgg != null ? mergeSourceAgg.subtotal : computedTotal
 
-                const qtyByProductId = new Map()
-                for (const row of expandedRows) {
-                    const pid = String(row.product_id)
-                    const q = parseOrderItemQty(row.quantity ?? '0')
-                    qtyByProductId.set(pid, (Number(qtyByProductId.get(pid)) || 0) + q)
-                }
-                const stockIssues = []
-                let hasStockData = false
-                for (const [pid, qty] of qtyByProductId) {
-                    const prod = products.find((p) => String(p.id) === pid)
-                    if (!prod) continue
-                    const st = prod.stock
-                    if (st != null && st !== '' && Number.isFinite(Number(st)) && Number(st) >= 0 && qty > Number(st)) {
-                        hasStockData = true
-                        stockIssues.push(
-                            `${prod.name || displayProductName(prod)}: ${t('orders.stockAvailableLabel')} ${st}, ${t('orders.qtyLabel')} ${qty}`
-                        )
-                    } else if (st != null && st !== '' && Number.isFinite(Number(st)) && Number(st) >= 0) {
-                        hasStockData = true
-                    }
-                }
-                if (stockIssues.length) {
-                    const ok = await showConfirm(
-                        `${stockIssues.join('\n')}\n\n${t('orders.stockWarningConfirm')}`,
-                        { title: t('orders.stockWarningTitle'), variant: 'warning' }
-                    )
-                    if (!ok) return
-                } else if (hasStockData) {
-                    showToast(t('orders.stockEnoughNotice') || 'Buyurtma mahsulotlari omborda yetarli', { type: 'info' })
-                }
+                // Ombor bilan bog'liqlik o'chirildi: bu yerda stock tekshiruvi qilinmaydi.
 
                 const noteCombined = (form.note || '').trim()
 
@@ -836,7 +879,8 @@ function BuyurtmalarPageContent() {
                                   ? 'cancelled'
                                   : form.status,
                     note: noteCombined,
-                    source: normalizeSourceForDb(form.source)
+                    source: normalizeSourceForDb(form.source),
+                    customer_address: form.customer_address
                 }
 
                 const sourceLineIndexMap = new Map()
@@ -869,10 +913,12 @@ function BuyurtmalarPageContent() {
                                 : prod?.size != null && String(prod.size).trim() !== ''
                                   ? String(prod.size).trim()
                                   : null
-                        const lineNoteDb =
-                            line.line_note != null && String(line.line_note).trim() !== ''
-                                ? String(line.line_note).trim()
-                                : null
+                        const localNoteDb =
+                            line.local_note != null && String(line.local_note).trim() !== ''
+                                ? String(line.local_note).trim()
+                                : line.line_note != null && String(line.line_note).trim() !== ''
+                                  ? String(line.line_note).trim()
+                                  : null
                         return {
                             order_id: orderId,
                             product_id: line.product_id,
@@ -883,7 +929,7 @@ function BuyurtmalarPageContent() {
                             size: sizeForDb,
                             color: colorVal != null && colorVal !== '' ? String(colorVal) : null,
                             image_url: imgVal != null && imgVal !== '' ? String(imgVal) : null,
-                            line_note: lineNoteDb,
+                            local_note: localNoteDb,
                             __separateKey: line.source_line_id != null && String(line.source_line_id).trim() !== ''
                                 ? String(line.source_line_id).trim()
                                 : '',
@@ -899,41 +945,25 @@ function BuyurtmalarPageContent() {
                         return
                     }
 
-                    const { error: delErr } = await supabase.from('order_items').delete().eq('order_id', orderIdStr)
-                    if (delErr) throw delErr
+                    const res = await fetch(`${API_URL}/orders/${orderIdStr}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            ...baseOrderPayload,
+                            order_items: itemPayloadsEdit
+                        })
+                    })
+                    if (!res.ok) throw new Error('Error updating order on backend')
+                    const updatedOrderData = await res.json()
 
-                    const { error: itemErrorEdit } = await supabase.from('order_items').insert(itemPayloadsEdit)
-                    if (itemErrorEdit) throw itemErrorEdit
-
-                    const { error: updErr } = await supabase.from('orders').update(baseOrderPayload).eq('id', orderIdStr)
-                    if (updErr) throw updErr
-
-                    // Stock Automation for Edit
-                    const newStatus = baseOrderPayload.status
-                    if (newStatus !== oldStatus) {
-                        const items = itemPayloadsEdit
-                        const num = oldOrder?.order_number || orderIdStr
-                        if (newStatus === 'completed') {
-                            const outstanding = await getOutstandingItemsForDeduction(orderIdStr, items)
-                            if (outstanding.length > 0) {
-                                await deductStockForCompletedOrder(orderIdStr, num, outstanding)
-                                showToast(t('orders.stockDeductedOk') || 'Ombor qoldig\'i yangilandi', { type: 'success' })
-                            } else {
-                                showToast(t('orders.stockAlreadyDeducted') || 'Bu buyurtma bo‘yicha chiqim avval yozilgan', {
-                                    type: 'info',
-                                })
-                            }
-                        } else if (oldStatus === 'completed') {
-                            await reverseStockForOrder(orderIdStr, num, items)
-                            showToast(t('orders.stockReversedOk') || 'Ombor qoldig\'i qaytarildi', { type: 'info' })
-                        }
-                    }
+                    // Ombor bilan bog'liqlik o'chirildi: status o'zgarishida stock deduct/reverse yo'q.
 
                     setForm({
 
                         customer_id: '',
                         customer_name: '',
                         customer_phone: '',
+                        customer_address: '',
                         total: '',
                         status: 'new',
                         note: '',
@@ -949,29 +979,22 @@ function BuyurtmalarPageContent() {
                 }
 
                 let newOrder = null
-                let ins = await supabase
-                    .from('orders')
-                    .insert([{ ...baseOrderPayload, order_number: displayOrderNo }])
-                    .select()
-                    .single()
-
-                const errMsg = ins.error ? String(ins.error.message || ins.error) : ''
-                if (ins.error && /order_number|column.*does not exist|schema cache/i.test(errMsg)) {
-                    ins = await supabase
-                        .from('orders')
-                        .insert([
-                            {
-                                ...baseOrderPayload,
-                                note: `${t('orders.orderNumberPrefix')} ${displayOrderNo}\n${noteCombined || ''}`
-                            }
-                        ])
-                        .select()
-                        .single()
-                } else if (ins.error) {
-                    throw ins.error
+                const itemPayloads = mergeOrderItemPayloadsForDb(makeItemPayloads(''), products)
+                
+                const res = await fetch(`${API_URL}/orders`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ...baseOrderPayload,
+                        order_items: itemPayloads
+                    })
+                })
+                if (!res.ok) {
+                    const errData = await res.json().catch(() => ({}))
+                    const msg = errData?.error || errData?.message || 'Error creating order on backend'
+                    throw new Error(msg)
                 }
-                if (ins.error) throw ins.error
-                newOrder = ins.data
+                newOrder = await res.json()
 
                 try {
                     const snap = {
@@ -1000,55 +1023,14 @@ function BuyurtmalarPageContent() {
 
                 const orderId = newOrder.id
 
-                const itemPayloads = mergeOrderItemPayloadsForDb(makeItemPayloads(orderId), products)
-                if (!itemPayloads.length) {
-                    await supabase.from('orders').delete().eq('id', orderId)
-                    setMergeSourceOrderIds(null)
-                    await showAlert(t('orders.orderLinesEmpty'), { variant: 'warning' })
-                    return
-                }
-
-                const { error: itemError } = await supabase.from('order_items').insert(itemPayloads)
-
-                if (itemError) {
-                    await supabase.from('orders').delete().eq('id', orderId)
-                    setMergeSourceOrderIds(null)
-                    throw itemError
-                }
-
-                // Stock Automation for New Order
-                if (baseOrderPayload.status === 'completed') {
-                    await deductStockForCompletedOrder(orderId, displayOrderNo, itemPayloads)
-                    showToast(t('orders.stockDeductedOk') || 'Ombor qoldig\'i yangilandi', { type: 'success' })
-                }
+                // Ombor bilan bog'liqlik o'chirildi: yangi buyurtmada stock deduct yo'q.
 
 
                 const sourceIdsToArchive = mergeSourceOrderIds
                 const shouldArchive = mergeArchiveSources ? sourceIdsToArchive : null
                 if (shouldArchive?.length >= 2) {
-                    const ts = new Date().toISOString()
-                    const { error: archErr } = await supabase
-                        .from('orders')
-                        .update({ deleted_at: ts })
-                        .in('id', shouldArchive)
-                    if (archErr) {
-                        if (isDeletedAtMissingError(archErr)) {
-                            await showAlert(t('orders.deletedAtMigrationHint'), { variant: 'warning' })
-                        } else {
-                            await showAlert(archErr.message || String(archErr), {
-                                title: t('common.saveError'),
-                                variant: 'error',
-                            })
-                        }
-                    } else {
-                        setMergeSelection((prev) => {
-                            const next = { ...prev }
-                            for (const sid of shouldArchive) delete next[sid]
-                            return next
-                        })
-                        showToast(t('orders.mergeArchiveSourcesDone'), { type: 'success' })
-                        await loadTrashOrdersRef.current?.()
-                    }
+                    // Backend rejimda deleted_at/trash yo'q — manba buyurtmalar o'chirilmaydi.
+                    showToast("Merge bajarildi. Backend rejimda manba buyurtmalar avtomatik arxivlanmaydi.", { type: 'info' })
                 }
                 setMergeSourceOrderIds(null)
 
@@ -1065,6 +1047,7 @@ function BuyurtmalarPageContent() {
                     customer_id: '',
                     customer_name: '',
                     customer_phone: '',
+                    customer_address: '',
                     total: '',
                     status: 'new',
                     note: '',
@@ -1093,67 +1076,72 @@ function BuyurtmalarPageContent() {
     }
 
     async function handleDelete(id) {
-        if (!(await showConfirm(t('orders.softDeleteConfirm'), { variant: 'warning' }))) return
-
+        if (!(await showConfirm(t('common.deleteConfirm'), { variant: 'warning' }))) return
         try {
-            const { error } = await supabase
-                .from('orders')
-                .update({ deleted_at: new Date().toISOString() })
-                .eq('id', id)
-
-            if (error) {
-                if (isDeletedAtMissingError(error)) {
-                    await showAlert(t('orders.deletedAtMigrationHint'), { variant: 'warning' })
-                    return
-                }
-                throw error
-            }
+            await fetch(`${API_URL}/orders/${id}`, { method: 'DELETE' })
             setMergeSelection((prev) => {
                 const next = { ...prev }
                 delete next[id]
                 return next
             })
             await loadData({ silent: true })
-            if (ordersListViewRef.current === 'trash') await loadTrashOrders()
+            await loadTrashOrders()
         } catch (error) {
             console.error('Error deleting order:', error)
             await showAlert(t('common.deleteError'), { variant: 'error' })
         }
     }
 
-    async function handleRestoreOrder(id) {
+    async function handleDeleteSelectedOrders() {
+        const ids = Object.keys(mergeSelection).filter((id) => mergeSelection[id])
+        if (!ids.length) return
+
+        const msg = `${t('common.deleteConfirm')} (${ids.length} ta)`
+        if (!(await showConfirm(msg, { variant: 'warning' }))) return
+
         try {
-            const { error } = await supabase.from('orders').update({ deleted_at: null }).eq('id', id)
-            if (error) {
-                if (isDeletedAtMissingError(error)) {
-                    await showAlert(t('orders.deletedAtMigrationHint'), { variant: 'warning' })
-                    return
-                }
-                throw error
-            }
+            const res = await fetch(`${API_URL}/orders/bulk-delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids })
+            })
+            if (!res.ok) throw new Error('Bulk delete failed')
+            
+            showToast(t('orders.deleteSelectedDone') || 'Tanlangan buyurtmalar o\'chirildi', { type: 'success' })
+            setMergeSelection({})
             await loadData({ silent: true })
             await loadTrashOrders()
         } catch (error) {
-            console.error('Error restoring order:', error)
+            console.error('Error bulk deleting orders:', error)
+            await showAlert(t('common.deleteError'), { variant: 'error' })
+        }
+    }
+
+    async function handleRestoreOrder(id) {
+        const ok = await showConfirm(t('orders.restoreConfirm'), { variant: 'info' })
+        if (!ok) return
+        try {
+            const { success, error } = await restoreOrder(id)
+            if (!success) throw error
+            showToast(t('orders.restoredSuccessfully'), { type: 'success' })
+            await loadTrashOrders()
+            await loadData({ silent: true })
+        } catch (e) {
+            console.error('handleRestoreOrder:', e)
             await showAlert(t('common.saveError'), { variant: 'error' })
         }
     }
 
     async function handlePermanentDelete(id) {
-        if (!(await showConfirm(t('orders.permanentDeleteConfirm'), { variant: 'warning' }))) return
-
+        const ok = await showConfirm(t('common.deleteConfirmPermanent'), { variant: 'error' })
+        if (!ok) return
         try {
-            const { error } = await supabase.from('orders').delete().eq('id', id)
-            if (error) throw error
-            setMergeSelection((prev) => {
-                const next = { ...prev }
-                delete next[id]
-                return next
-            })
-            await loadData({ silent: true })
+            const res = await fetch(`${API_URL}/orders/${id}/permanent`, { method: 'DELETE' })
+            if (!res.ok) throw new Error('permanent delete failed')
+            showToast(t('common.deletedSuccessfully'), { type: 'success' })
             await loadTrashOrders()
-        } catch (error) {
-            console.error('Error permanently deleting order:', error)
+        } catch (e) {
+            console.error('handlePermanentDelete:', e)
             await showAlert(t('common.deleteError'), { variant: 'error' })
         }
     }
@@ -1181,6 +1169,7 @@ function BuyurtmalarPageContent() {
             customer_id: item.customer_id || '',
             customer_name: item.customer_name || item.customers?.name || '',
             customer_phone: item.customer_phone || item.customers?.phone || '',
+            customer_address: item.customer_address || '',
             total: item.total != null ? String(item.total) : '',
             status: normalizeStatusForSelect(item.status),
             note: item.note || '',
@@ -1227,6 +1216,7 @@ function BuyurtmalarPageContent() {
             customer_id: item.customer_id || '',
             customer_name: item.customer_name || item.customers?.name || '',
             customer_phone: item.customer_phone || item.customers?.phone || '',
+            customer_address: item.customer_address || '',
             total: item.total != null ? String(item.total) : '',
             status: 'new',
             note: noteCombined,
@@ -1280,150 +1270,19 @@ function BuyurtmalarPageContent() {
         return out
     }
 
-    async function getOutstandingItemsForDeduction(orderId, items) {
-        const shippedMap = await loadOrderShippedMap(orderId)
-        const agg = new Map()
-        for (const oi of items || []) {
-            if (!oi?.product_id) continue
-            const key = orderItemShipKey(oi.product_id, oi.color || '—')
-            const prev = Number(agg.get(key)?.quantity) || 0
-            const q = parseOrderItemQty(oi.quantity || 0)
-            agg.set(key, {
-                product_id: oi.product_id,
-                color: oi.color || null,
-                quantity: prev + q,
-            })
-        }
-        const out = []
-        for (const [key, item] of agg.entries()) {
-            const shipped = Number(shippedMap.get(key)) || 0
-            const remaining = Math.max(0, Number(item.quantity || 0) - shipped)
-            if (remaining > 0) out.push({ ...item, quantity: remaining })
-        }
-        return out
-    }
-
-    function productAvailableForOrderItem(product, colorRaw) {
-        const total = Number(product?.stock)
-        const totalSafe = Number.isFinite(total) && total >= 0 ? total : 0
-        const byColor = product?.stock_by_color
-        if (!byColor || typeof byColor !== 'object' || Array.isArray(byColor)) return totalSafe
-        const wanted = normalizeOrderItemColorKey(colorRaw || '—')
-        for (const [k, v] of Object.entries(byColor)) {
-            if (normalizeOrderItemColorKey(k) === wanted) {
-                const n = Number(v)
-                return Number.isFinite(n) && n >= 0 ? n : totalSafe
-            }
-        }
-        return totalSafe
-    }
+    // Ombor bilan bog'liqlik o'chirildi.
 
     async function openPartialShipDialog(order) {
         if (!order) return
-        const rawItems = dedupeOrderItemsKeepNewest(order.order_items || [], products)
-        if (!rawItems.length) {
-            await showAlert(t('orders.partialNoItems'), { variant: 'warning' })
-            return
-        }
-        setPartialShipOrder(order)
-        setPartialShipRows([])
-        setPartialShipLoading(true)
-        try {
-            const shippedMap = await loadOrderShippedMap(order.id)
-            const rows = rawItems
-                .map((oi, idx) => {
-                    const ordered = parseOrderItemQty(oi.quantity || 0)
-                    const key = orderItemShipKey(oi.product_id, oi.color || '—')
-                    const shipped = Number(shippedMap.get(key)) || 0
-                    const remaining = Math.max(0, ordered - shipped)
-                    const prod = products.find((p) => String(p.id) === String(oi.product_id))
-                    const available = productAvailableForOrderItem(prod, oi.color || '—')
-                    return {
-                        key: `${key}-${idx}`,
-                        product_id: oi.product_id,
-                        product_name: oi.product_name || oi.products?.name || displayProductName(prod),
-                        size: oi.size || prod?.size || '',
-                        color: oi.color || null,
-                        ordered_qty: ordered,
-                        shipped_qty: shipped,
-                        remaining_qty: remaining,
-                        available_qty: available,
-                        ship_qty: remaining > 0 ? Math.min(remaining, available) : 0,
-                    }
-                })
-                .filter((r) => r.ordered_qty > 0)
-            setPartialShipRows(rows)
-        } catch (error) {
-            console.error('openPartialShipDialog:', error)
-            await showAlert(error?.message || String(error), {
-                title: t('orders.partialLoadError'),
-                variant: 'error',
-            })
-            setPartialShipOrder(null)
-            setPartialShipRows([])
-        } finally {
-            setPartialShipLoading(false)
-        }
+        await showAlert("Buyurtmalar sahifasi ombordan uzildi: qisman jo'natish o'chirilgan.", {
+            variant: 'info'
+        })
     }
 
     async function submitPartialShipment() {
-        if (!partialShipOrder) return
-        const toShip = partialShipRows
-            .map((r) => ({
-                product_id: r.product_id,
-                color: r.color || null,
-                quantity: Math.max(0, Math.min(r.remaining_qty, parseOrderItemQty(r.ship_qty || 0))),
-                product_name: r.product_name,
-                available_qty: r.available_qty,
-            }))
-            .filter((r) => r.quantity > 0)
-        if (!toShip.length) {
-            await showAlert(t('orders.partialNothingToShip'), { variant: 'warning' })
-            return
-        }
-        const availabilityIssues = toShip.filter((r) => Number(r.quantity) > Number(r.available_qty || 0))
-        if (availabilityIssues.length) {
-            const msg = availabilityIssues
-                .map(
-                    (r) =>
-                        `${r.product_name}: ${t('orders.stockAvailableLabel')} ${r.available_qty}, ${t('orders.partialShipQtyLabel')} ${r.quantity}`
-                )
-                .join('\n')
-            const ok = await showConfirm(`${msg}\n\n${t('orders.stockWarningConfirm')}`, {
-                title: t('orders.stockWarningTitle'),
-                variant: 'warning',
-            })
-            if (!ok) return
-        }
-        setPartialShipSaving(true)
-        try {
-            const orderNum = partialShipOrder.order_number || partialShipOrder.id
-            const res = await deductStockForCompletedOrder(partialShipOrder.id, orderNum, toShip)
-            if (!res?.success) {
-                const errText = (res?.errors || [])
-                    .map((e) => `${e.product_id}: ${e.error}`)
-                    .join('\n')
-                await showAlert(errText || t('common.saveError'), {
-                    title: t('orders.partialSaveError'),
-                    variant: 'error',
-                })
-                return
-            }
-            // Qisman jo'natishdan keyin buyurtma "jarayonda" bo'lib turadi.
-            await supabase.from('orders').update({ status: 'pending' }).eq('id', partialShipOrder.id)
-            showToast(t('orders.partialSavedOk'), { type: 'success' })
-            setPartialShipOrder(null)
-            setPartialShipRows([])
-            await loadData({ silent: true })
-        } catch (error) {
-            console.error('submitPartialShipment:', error)
-            await showAlert(error?.message || String(error), {
-                title: t('orders.partialSaveError'),
-                variant: 'error',
-            })
-        } finally {
-            setPartialShipSaving(false)
-        }
+        await showAlert("Buyurtmalar sahifasi ombordan uzildi: qisman jo'natish o'chirilgan.", {
+            variant: 'info'
+        })
     }
 
     /** CRM → ERP jo‘natuv: navbatga qo‘shiladi, ERP «Keltirilgan»da «Qabul qilish» bilan zaxira to‘ldiriladi */
@@ -1502,21 +1361,17 @@ function BuyurtmalarPageContent() {
         )
         if (!ok) return
         try {
-            const { data, error } = await supabase
-                .from('erp_inbound_requests')
-                .insert({
-                    order_id: order.id,
+            let data = null
+            try {
+                data = await createErpInboundPendingRequest({
+                    orderId: order.id,
                     items,
-                    order_number_snapshot: String(order.order_number || order.id),
-                    customer_name_snapshot: String(order.customer_name || '').trim(),
-                    status: 'pending',
+                    orderNumberSnapshot: String(order.order_number || order.id),
+                    customerNameSnapshot: String(order.customer_name || '').trim()
                 })
-                .select('id')
-                .single()
-
-            if (error) {
-                const msg = String(error.message || '')
-                const code = error.code
+            } catch (error) {
+                const msg = String(error?.message || '')
+                const code = error?.code
                 if (code === '23505' || /unique|duplicate|erp_inbound/i.test(msg)) {
                     await showAlert(
                         'Bu buyurtma bo‘yicha allaqachon ERPga jo‘natilgan so‘rov mavjud. ERP «Keltirilgan» sahifasida tasdiqlang.',
@@ -1551,46 +1406,13 @@ function BuyurtmalarPageContent() {
 
         try {
             const stamp = new Date().toISOString()
-            let { error } = await supabase
-                .from('orders')
-                .update({ status: newStatus, updated_at: stamp })
-                .eq('id', id)
-
-            if (
-                error &&
-                /updated_at|column|does not exist|42703|schema cache/i.test(String(error.message || ''))
-            ) {
-                ;({ error } = await supabase.from('orders').update({ status: newStatus }).eq('id', id))
-            }
-
-            if (error) throw error
-
-            // 1. Stock Automation: Deduct or reverse
-            const orderItems = order.order_items || []
-            const orderNum = order.order_number || order.id
-
-            if (newStatus === 'completed') {
-                // Qisman jo'natish bo'lgan bo'lsa ham faqat qolgan qismini ayiramiz.
-                const outstanding = await getOutstandingItemsForDeduction(id, orderItems)
-                if (outstanding.length > 0) {
-                    await deductStockForCompletedOrder(id, orderNum, outstanding)
-                    showToast(t('orders.stockDeductedOk') || 'Ombor qoldig\'i yangilandi', { type: 'success' })
-                } else {
-                    showToast(t('orders.stockAlreadyDeducted') || 'Bu buyurtma bo‘yicha chiqim avval yozilgan', {
-                        type: 'info',
-                    })
-                }
-            } else if (oldStatus === 'completed') {
-                // Oldin 'completed' bo'lgan bo'lsa va endi boshqasiga o'tsa - qoldiqni qaytarish
-                await reverseStockForOrder(id, orderNum, orderItems)
-                showToast(t('orders.stockReversedOk') || 'Ombor qoldig\'i qaytarildi', { type: 'info' })
-            }
-
-            setOrders((prev) =>
-                prev.map((o) =>
-                    o.id === id ? { ...o, status: newStatus, updated_at: stamp } : o
-                )
-            )
+            const res = await fetch(`${API_URL}/orders/${id}/status`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus })
+            })
+            if (!res.ok) throw new Error('status update failed')
+            setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, status: newStatus, updated_at: stamp } : o)))
         } catch (error) {
             console.error('Error updating status:', error)
             await showAlert(t('common.saveError'), { variant: 'error' })
@@ -1630,6 +1452,7 @@ function BuyurtmalarPageContent() {
                 customer_id: '',
                 customer_name: '',
                 customer_phone: '',
+                customer_address: '',
                 total: '',
                 status: 'new',
                 note: '',
@@ -1670,6 +1493,7 @@ function BuyurtmalarPageContent() {
                 ...f,
                 customer_name: d.customer_name || '',
                 customer_phone: d.customer_phone || '',
+                customer_address: d.customer_address || '',
                 customer_id: d.customer_id || ''
             }))
             if (d.lines?.length) {
@@ -2067,7 +1891,7 @@ function BuyurtmalarPageContent() {
             const p = products.find((x) => String(x.id) === String(pid).trim())
             if (p) return { list: [p], reason: null }
         }
-        const code = String(row.model_code || '').trim()
+        const code = String(row.model_code || '').trim() || String(row.product_name || '').trim()
         if (!code) return { list: [], reason: 'empty' }
         return getProductsByModelCode(code)
     }
@@ -2075,20 +1899,40 @@ function BuyurtmalarPageContent() {
     async function persistImportedExcelOrderGroup(group) {
         const first = group[0]
         const linesForMerge = []
+        
+        // Yangi ranglarni kutubxonaga qo'shish
+        const uniqueColorsInGroup = [...new Set(group.map(row => String(row.color || '').trim()).filter(Boolean))]
+        for (const colorName of uniqueColorsInGroup) {
+            const exists = productColors.some(c => 
+                (c.name || '').toLowerCase() === colorName.toLowerCase() ||
+                (c.name_uz || '').toLowerCase() === colorName.toLowerCase()
+            )
+            if (!exists) {
+                try {
+                    await api.post('/api/colors', { name: colorName })
+                    // loadData ni chaqirib local state ni yangilaymiz (agar kerak bo'lsa)
+                } catch (e) {
+                    console.error('New color auto-save failed:', colorName, e)
+                }
+            }
+        }
+
         for (const row of group) {
             const res = resolveProductForExcelImportRow(row)
+            const failingCode = String(row.model_code || row.product_name || '').trim() || '—'
+            
             if (!res.list?.length) {
                 const msg =
                     res.reason === 'empty'
                         ? t('orders.codeEmpty')
                         : res.reason === 'ambiguous'
-                          ? t('orders.codeAmbiguous')
-                          : t('orders.codeNotFound')
+                          ? `${t('orders.codeAmbiguous')} ("${failingCode}")`
+                          : `${t('orders.codeNotFound')} ("${failingCode}")`
                 throw new Error(msg)
             }
             if (res.list.length > 1) {
                 throw new Error(
-                    `${t('orders.codeAmbiguous')} (${String(row.model_code || '').trim() || '—'})`
+                    `${t('orders.codeAmbiguous')} ("${failingCode}")`
                 )
             }
             const product = res.list[0]
@@ -2139,7 +1983,6 @@ function BuyurtmalarPageContent() {
         }
 
         const displayOrderNo = generateDisplayOrderNumber()
-        let insertPayload = { ...baseOrderPayload, order_number: displayOrderNo }
         const rawCa = first.order_created_at
         const parseImportedCreatedAtIso = (raw) => {
             const s = String(raw ?? '').trim()
@@ -2159,39 +2002,32 @@ function BuyurtmalarPageContent() {
             return dt.toISOString()
         }
         const createdAtIso = parseImportedCreatedAtIso(rawCa)
-        if (createdAtIso) {
-            insertPayload.created_at = createdAtIso
+
+        // Consolidation for Backend API (Order + Items in one go)
+        const payload = {
+            ...baseOrderPayload,
+            order_items: itemPayloads.map((p, idx) => ({
+                ...p,
+                line_index: typeof p.line_index === 'number' ? p.line_index : idx
+            }))
         }
 
-        let ins = await supabase.from('orders').insert([insertPayload]).select().single()
-        const errMsg = ins.error ? String(ins.error.message || ins.error) : ''
-        if (ins.error && /order_number|column.*does not exist|schema cache/i.test(errMsg)) {
-            insertPayload = {
-                ...baseOrderPayload,
-                note: `${t('orders.orderNumberPrefix')} ${displayOrderNo}\n${baseOrderPayload.note || ''}`
-            }
-            if (createdAtIso) insertPayload.created_at = createdAtIso
-            ins = await supabase.from('orders').insert([insertPayload]).select().single()
-        }
-        if (ins.error) throw ins.error
+        if (createdAtIso) payload.created_at = createdAtIso
 
-        const orderId = ins.data?.id
-        if (!orderId) throw new Error('orders.insert: no id')
-        const rowsInsert = itemPayloads.map((p, idx) => ({
-            ...p,
-            order_id: orderId,
-            line_index: typeof p.line_index === 'number' ? p.line_index : idx
-        }))
+        const res = await fetch(`${API_URL}/orders`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
 
-        const { error: itemError } = await supabase.from('order_items').insert(rowsInsert)
-        if (itemError) {
-            await supabase.from('orders').delete().eq('id', orderId)
-            throw itemError
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}))
+            throw new Error(errData?.message || `Backend error: ${res.statusText}`)
         }
+        const createdOrder = await res.json()
+        const orderId = createdOrder.id
 
-        if (baseOrderPayload.status === 'completed') {
-            await deductStockForCompletedOrder(orderId, displayOrderNo, rowsInsert)
-        }
+        // Ombor bilan bog'liqlik o'chirildi: importda stock deduct yo'q.
     }
 
     async function handleExportSelectedOrdersExcel(includeImages = true) {
@@ -2312,7 +2148,7 @@ function BuyurtmalarPageContent() {
 
 
     return (
-        <div className="w-full max-w-none xl:max-w-[min(100%,112rem)] 2xl:max-w-[min(100%,120rem)] mx-auto">
+        <div className="w-full max-w-none xl:max-w-[min(100%,112rem)] 2xl:max-w-[min(100%,120rem)] mx-auto relative z-10 p-4 lg:p-8">
             <Header title={t('common.orders')} toggleSidebar={toggleSidebar} />
 
             {ordersListView === 'trash' ? (
@@ -2325,10 +2161,10 @@ function BuyurtmalarPageContent() {
                 <button
                     type="button"
                     onClick={() => switchOrdersListView('active')}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold transition-all ${
+                    className={`inline-flex items-center gap-2 rounded-2xl px-5 py-3 text-[11px] font-black uppercase tracking-widest transition-all ${
                         ordersListView === 'active'
-                            ? 'bg-blue-600 text-white shadow-md shadow-blue-600/25'
-                            : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-50'
+                            ? 'bg-blue-600 text-white shadow-xl shadow-blue-600/30 ring-1 ring-blue-500'
+                            : 'bg-white/5 text-white/40 border border-white/5 hover:text-white/80 hover:bg-white/10'
                     }`}
                 >
                     <ShoppingCart size={16} />
@@ -2337,10 +2173,10 @@ function BuyurtmalarPageContent() {
                 <button
                     type="button"
                     onClick={() => switchOrdersListView('trash')}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold transition-all ${
+                    className={`inline-flex items-center gap-2 rounded-2xl px-5 py-3 text-[11px] font-black uppercase tracking-widest transition-all ${
                         ordersListView === 'trash'
-                            ? 'bg-amber-600 text-white shadow-md shadow-amber-600/25'
-                            : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-50'
+                            ? 'bg-amber-600 text-[#02020a] shadow-xl shadow-amber-600/30'
+                            : 'bg-white/5 text-white/40 border border-white/5 hover:text-white/80 hover:bg-white/10'
                     }`}
                 >
                     <Archive size={16} />
@@ -2423,6 +2259,7 @@ function BuyurtmalarPageContent() {
                 excelImportInputRef={excelImportInputRef}
                 handleExcelImportFileChange={handleExcelImportFileChange}
                 excelImportBusy={excelImportBusy}
+                handleDeleteSelectedOrders={handleDeleteSelectedOrders}
             />
 
             <OrderFormDialog
@@ -2478,23 +2315,23 @@ function BuyurtmalarPageContent() {
             />
 
             {partialShipOrder ? (
-                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 lg:p-8">
                     <div
-                        className="absolute inset-0 bg-slate-900/60 backdrop-blur-md"
+                        className="absolute inset-0 bg-[#02020a]/90 backdrop-blur-3xl animate-in fade-in duration-300"
                         onClick={() => !partialShipSaving && setPartialShipOrder(null)}
                     />
                     <div
-                        className="relative w-full max-w-5xl max-h-[92vh] overflow-hidden rounded-3xl border border-slate-200/80 bg-white shadow-2xl"
+                        className="relative flex flex-col w-full max-w-5xl max-h-[92vh] overflow-hidden rounded-[3.5rem] border border-white/10 bg-[#0c0c14] shadow-4xl animate-in zoom-in slide-in-from-bottom-8 duration-500"
                         onClick={(e) => e.stopPropagation()}
                     >
-                        <div className="border-b border-emerald-100 bg-gradient-to-r from-emerald-50 via-white to-cyan-50 px-6 py-5">
+                        <div className="border-b border-white/5 bg-white/[0.01] px-10 py-8 shrink-0">
                             <div className="flex items-start justify-between gap-4">
                                 <div>
-                                    <h3 className="text-xl font-black text-slate-900">{t('orders.partialModalTitle')}</h3>
-                                    <p className="text-xs text-slate-600 mt-1">
+                                    <h3 className="text-2xl font-black text-white uppercase tracking-tighter">{t('orders.partialModalTitle')}</h3>
+                                    <p className="text-[10px] text-white/40 mt-1 uppercase font-black tracking-[0.2em]">
                                         {t('orders.partialModalHint')}
                                     </p>
-                                    <p className="text-xs text-emerald-700 mt-2 font-bold">
+                                    <p className="text-[11px] text-blue-400 mt-2 font-bold uppercase tracking-widest">
                                     {(t('orders.partialModalOrderPrefix') || 'Buyurtma')}{' '}
                                     {partialShipOrder.order_number
                                         ? `№${partialShipOrder.order_number}`
@@ -2509,41 +2346,45 @@ function BuyurtmalarPageContent() {
                                     <X size={20} />
                                 </button>
                             </div>
-                            <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-2.5">
-                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                    <p className="text-[10px] uppercase tracking-wide text-slate-500">{t('orders.qtyLabel')}</p>
-                                    <p className="font-mono font-black text-slate-900 text-lg">{partialShipSummary.ordered}</p>
+                            <div className="mt-8 grid grid-cols-2 md:grid-cols-4 gap-4 px-10">
+                                <div className="rounded-[2rem] border border-white/5 bg-white/[0.02] px-6 py-5 flex flex-col items-center justify-center">
+                                    <p className="text-[10px] uppercase font-black tracking-widest text-white/30 text-center text-balance">{t('orders.qtyLabel')}</p>
+                                    <p className="font-mono font-black text-white text-3xl mt-2">{partialShipSummary.ordered}</p>
                                 </div>
-                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                    <p className="text-[10px] uppercase tracking-wide text-slate-500">{t('orders.partialShippedCol')}</p>
-                                    <p className="font-mono font-black text-emerald-700 text-lg">{partialShipSummary.shipped}</p>
+                                <div className="rounded-[2rem] border border-white/5 bg-white/[0.02] px-6 py-5 flex flex-col items-center justify-center">
+                                    <p className="text-[10px] uppercase font-black tracking-widest text-emerald-400/50 text-center text-balance">{t('orders.partialShippedCol')}</p>
+                                    <p className="font-mono font-black text-emerald-400 text-3xl mt-2">{partialShipSummary.shipped}</p>
                                 </div>
-                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                    <p className="text-[10px] uppercase tracking-wide text-slate-500">{t('orders.partialRemainingCol')}</p>
-                                    <p className="font-mono font-black text-amber-700 text-lg">{partialShipSummary.remaining}</p>
+                                <div className="rounded-[2rem] border border-white/5 bg-white/[0.02] px-6 py-5 flex flex-col items-center justify-center">
+                                    <p className="text-[10px] uppercase font-black tracking-widest text-amber-400/50 text-center text-balance">{t('orders.partialRemainingCol')}</p>
+                                    <p className="font-mono font-black text-amber-400 text-3xl mt-2">{partialShipSummary.remaining}</p>
                                 </div>
-                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                    <p className="text-[10px] uppercase tracking-wide text-slate-500">{t('orders.partialShipQtyLabel')}</p>
-                                    <p className="font-mono font-black text-cyan-700 text-lg">{partialShipSummary.now}</p>
+                                <div className="rounded-[2rem] border border-blue-500/20 bg-blue-500/10 px-6 py-5 flex flex-col items-center justify-center ring-1 ring-blue-500/30">
+                                    <p className="text-[10px] uppercase font-black tracking-widest text-blue-400/60 text-center text-balance">{t('orders.partialShipQtyLabel')}</p>
+                                    <p className="font-mono font-black text-blue-400 text-3xl mt-2">{partialShipSummary.now}</p>
                                 </div>
                             </div>
-                            <div className="mt-3">
-                                <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
+                            <div className="mt-6 px-10 pb-4">
+                                <div className="h-3 rounded-full bg-white/5 overflow-hidden">
                                     <div
-                                        className="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all"
+                                        className="h-full bg-gradient-to-r from-emerald-500 to-blue-500 transition-all duration-500 relative"
                                         style={{ width: `${partialShipSummary.percent}%` }}
-                                    />
+                                    >
+                                        <div className="absolute inset-0 bg-white/20 w-full animate-pulse" />
+                                    </div>
                                 </div>
-                                <p className="mt-1 text-[11px] text-slate-600">
-                                    {t('orders.partialShippedCol')}: {partialShipSummary.percent}%
+                                <p className="mt-2 text-[10px] font-black uppercase tracking-widest text-white/30 text-right">
+                                    {t('orders.partialShippedCol')}: <span className="text-white">{partialShipSummary.percent}%</span>
                                 </p>
                             </div>
                         </div>
                         {partialShipLoading ? (
-                            <div className="px-6 py-14 text-sm text-slate-500">{t('common.loading')}</div>
+                            <div className="flex-1 flex items-center justify-center p-20">
+                                <div className="w-12 h-12 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+                            </div>
                         ) : (
-                            <>
-                                <div className="px-6 py-3 border-b border-slate-100 bg-slate-50/70 flex items-center justify-end gap-2">
+                            <div className="flex flex-col flex-1 min-h-0">
+                                <div className="px-10 py-4 border-b border-white/5 bg-white/[0.01] flex items-center justify-end gap-3 shrink-0">
                                     <button
                                         type="button"
                                         onClick={() =>
@@ -2554,7 +2395,7 @@ function BuyurtmalarPageContent() {
                                                 }))
                                             )
                                         }
-                                        className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
+                                        className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-5 py-2.5 text-[11px] font-black uppercase tracking-widest text-emerald-400 hover:bg-emerald-500/20 transition-all"
                                     >
                                         Maksimalni qo'yish
                                     </button>
@@ -2563,39 +2404,40 @@ function BuyurtmalarPageContent() {
                                         onClick={() =>
                                             setPartialShipRows((prev) => prev.map((r) => ({ ...r, ship_qty: 0 })))
                                         }
-                                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                                        className="rounded-2xl border border-white/10 bg-white/5 px-5 py-2.5 text-[11px] font-black uppercase tracking-widest text-white/50 hover:bg-white/10 hover:text-white/80 transition-all"
                                     >
                                         Tozalash
                                     </button>
                                 </div>
-                                <div className="max-h-[56vh] overflow-auto">
-                                    <table className="w-full text-sm">
-                                        <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500 z-10">
-                                            <tr>
-                                                <th className="px-5 py-3 text-left">{t('orders.products')}</th>
-                                                <th className="px-4 py-3 text-right">{t('orders.qtyLabel')}</th>
-                                                <th className="px-4 py-3 text-right">{t('orders.partialShippedCol')}</th>
-                                                <th className="px-4 py-3 text-right">{t('orders.partialRemainingCol')}</th>
-                                                <th className="px-4 py-3 text-right">{t('orders.stockAvailableLabel')}</th>
-                                                <th className="px-5 py-3 text-right">{t('orders.partialShipQtyLabel')}</th>
+                                <div className="overflow-y-auto custom-scrollbar flex-1 bg-black/20 relative">
+                                    <table className="w-full text-left">
+                                        <thead className="sticky top-0 bg-[#0c0c14]/90 backdrop-blur-md text-[9px] font-black uppercase tracking-[0.3em] text-white/20 z-10 shadow-md">
+                                            <tr className="border-b border-white/5">
+                                                <th className="px-10 py-5">{t('orders.products')}</th>
+                                                <th className="px-6 py-5 text-right">{t('orders.qtyLabel')}</th>
+                                                <th className="px-6 py-5 text-right">{t('orders.partialShippedCol')}</th>
+                                                <th className="px-6 py-5 text-right">{t('orders.partialRemainingCol')}</th>
+                                                <th className="px-6 py-5 text-right">{t('orders.stockAvailableLabel')}</th>
+                                                <th className="px-10 py-5 text-right text-blue-400">{t('orders.partialShipQtyLabel')}</th>
                                             </tr>
                                         </thead>
-                                        <tbody>
+                                        <tbody className="divide-y divide-white/5">
                                             {partialShipRows.map((row) => (
-                                                <tr key={row.key} className="border-t border-slate-100 hover:bg-emerald-50/40">
-                                                    <td className="px-5 py-3">
-                                                        <p className="font-semibold text-slate-900">{row.product_name}</p>
-                                                        <p className="text-xs text-slate-500 mt-0.5">
-                                                            {row.size || '—'} {row.color ? `• ${row.color}` : ''}
+                                                <tr key={row.key} className="hover:bg-white/[0.02] transition-colors group">
+                                                    <td className="px-10 py-6">
+                                                        <p className="font-bold text-white text-[13px]">{row.product_name}</p>
+                                                        <p className="text-[10px] font-mono text-white/40 mt-1 flex items-center gap-2">
+                                                            {row.size && <span className="bg-white/5 px-2 py-0.5 rounded-md border border-white/5">{row.size}</span>}
+                                                            {row.color && <span className="uppercase font-black text-white/30 tracking-widest">{row.color}</span>}
                                                         </p>
                                                     </td>
-                                                    <td className="px-4 py-3 text-right font-mono">{row.ordered_qty}</td>
-                                                    <td className="px-4 py-3 text-right font-mono text-emerald-700">{row.shipped_qty}</td>
-                                                    <td className="px-4 py-3 text-right font-mono font-semibold text-amber-700">
+                                                    <td className="px-6 py-6 text-right font-mono font-bold text-white/60">{row.ordered_qty}</td>
+                                                    <td className="px-6 py-6 text-right font-mono font-bold text-emerald-400/80">{row.shipped_qty}</td>
+                                                    <td className="px-6 py-6 text-right font-mono font-bold text-amber-400">
                                                         {row.remaining_qty}
                                                     </td>
-                                                    <td className="px-4 py-3 text-right font-mono">{row.available_qty}</td>
-                                                    <td className="px-5 py-3 text-right">
+                                                    <td className="px-6 py-6 text-right font-mono font-bold text-white/40">{row.available_qty}</td>
+                                                    <td className="px-10 py-6 text-right">
                                                         <input
                                                             type="number"
                                                             min={0}
@@ -2616,7 +2458,7 @@ function BuyurtmalarPageContent() {
                                                                     )
                                                                 )
                                                             }}
-                                                            className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-right font-mono font-semibold outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                                                            className="w-24 rounded-[1rem] border border-white/10 bg-[#02020a] px-4 py-2.5 text-right font-mono font-black text-white outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 shadow-inner transition-all group-hover:bg-[#0c0c14]"
                                                         />
                                                     </td>
                                                 </tr>
@@ -2624,16 +2466,16 @@ function BuyurtmalarPageContent() {
                                         </tbody>
                                     </table>
                                 </div>
-                                <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-6 py-4 bg-slate-50">
-                                    <p className="text-xs text-slate-500">
-                                        {t('orders.partialShipQtyLabel')}: <span className="font-black text-emerald-700">{partialShipSummary.now}</span>
+                                <div className="flex items-center justify-between gap-6 border-t border-white/10 px-10 py-6 bg-[#0c0c14] shrink-0">
+                                    <p className="text-[11px] font-black uppercase tracking-widest text-white/30">
+                                        {t('orders.partialShipQtyLabel')}: <span className="font-mono text-blue-400 text-lg ml-2">{partialShipSummary.now}</span>
                                     </p>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-4">
                                         <button
                                             type="button"
                                             onClick={() => setPartialShipOrder(null)}
                                             disabled={partialShipSaving}
-                                            className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                                            className="rounded-[1.5rem] bg-white/5 border border-white/5 px-8 py-3.5 text-[11px] font-black uppercase tracking-widest text-white/50 hover:bg-white/10 hover:text-white transition-all disabled:opacity-50"
                                         >
                                             {t('common.cancel')}
                                         </button>
@@ -2641,14 +2483,14 @@ function BuyurtmalarPageContent() {
                                             type="button"
                                             onClick={() => void submitPartialShipment()}
                                             disabled={partialShipSaving || partialShipSummary.now <= 0}
-                                            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+                                            className="inline-flex items-center gap-3 rounded-[1.5rem] bg-blue-600 px-8 py-3.5 text-xs font-black uppercase tracking-tight text-white shadow-xl shadow-blue-600/30 hover:bg-blue-500 hover:-translate-y-0.5 active:translate-y-0 transition-all disabled:opacity-50 disabled:shadow-none"
                                         >
-                                            <Truck size={16} />
+                                            <Truck size={18} />
                                             {partialShipSaving ? '...' : t('orders.partialShipAction')}
                                         </button>
                                     </div>
                                 </div>
-                            </>
+                            </div>
                         )}
                     </div>
                 </div>
@@ -2659,14 +2501,16 @@ function BuyurtmalarPageContent() {
 
 export default function Buyurtmalar() {
     return (
-        <Suspense
-            fallback={
-                <div className="flex min-h-[50vh] items-center justify-center p-8">
-                    <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
-                </div>
-            }
-        >
-            <BuyurtmalarPageContent />
-        </Suspense>
+        <div className="min-h-screen text-[#f8fafc] selection:bg-blue-500/30">
+            <Suspense
+                fallback={
+                    <div className="flex min-h-[50vh] items-center justify-center p-8 relative z-10">
+                        <div className="w-20 h-20 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+                    </div>
+                }
+            >
+                <BuyurtmalarPageContent />
+            </Suspense>
+        </div>
     )
 }

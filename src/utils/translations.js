@@ -100,6 +100,43 @@ export const translations = {
                 philippines: "Filippin"
             }
         },
+        mobileIntake: {
+            authTitle: 'Mobil kirish',
+            authSubtitle: 'Asosiy login o‘zgarmaydi. Quyida faqat chiqim yozuvchi xodim logini bor.',
+            mainLoginCta: 'Asosiy CRM loginga o‘tish',
+            staffLoginTitle: 'Xodim logini (ERP pending)',
+            staffLoginCta: 'Xodim sifatida kirish',
+            signingIn: 'Kirilmoqda...',
+            loginRequired: 'Email va parolni kiriting.',
+            loginRoleDenied: 'Bu akkauntda mobile intake roli yo‘q.',
+            loginFailed: 'Kirish amalga oshmadi.',
+            email: 'Email',
+            password: 'Parol',
+            logout: 'Chiqish',
+            notAllowed: 'Bu akkaunt mobil bo‘limga kira olmaydi.',
+            title: 'Chiqib ketgan mahsulotlar',
+            addLine: 'Yangi qator qo‘shish',
+            customerName: 'Mijoz ismi',
+            productSearch: 'Mahsulot qidirish (kod yoki nom)',
+            selectProduct: 'Mahsulot tanlang',
+            selectProductFirst: 'Avval mahsulotni tanlang.',
+            qtyPlaceholder: 'Miqdor (dona yoki kg)',
+            qtyPositive: 'Miqdor 0 dan katta bo‘lishi kerak.',
+            colorOptional: 'Rang (ixtiyoriy)',
+            add: 'Qator qo‘shish',
+            noteOptional: 'Izoh (ixtiyoriy)',
+            pendingCart: 'Yuboriladigan qatorlar',
+            noLinesYet: 'Hozircha qator qo‘shilmagan.',
+            sendPending: 'ERP pendingga yuborish',
+            sending: 'Yuborilmoqda...',
+            myRequests: 'Mening yuborganlarim',
+            noRequests: 'Hozircha yuborilgan so‘rov yo‘q.',
+            successSaved: 'So‘rov qabul qilindi.',
+            ordersVisibilityHint:
+                'Buyurtma CRM «Buyurtmalar» sahifasida admin yoki CRM rollari bilan kirgan foydalanuvchilar uchun ko‘rinadi. Sizning ekraningizda esa «Mening yuborganlarim» — ERP pending navbati.',
+            myRequestsFootnote:
+                'Mobil xodim rejimida alohida «Buyurtmalar» tabi yo‘q; to‘liq buyurtmalar ro‘yxatini CRM (admin/CRM) ochadi.'
+        },
         dashboard: {
             title: 'Dashboard',
             totalCustomers: 'Jami Mijozlar',
@@ -195,6 +232,8 @@ export const translations = {
             orderNumber: 'Buyurtma #',
             customer: 'Mijoz',
             contact: 'Aloqa',
+            deliveryAddress: 'Yetkazib berish manzili',
+            customerAddress: 'Mijoz manzili',
             products: 'Mahsulotlar',
             total: 'Jami',
             status: 'Status',
@@ -554,6 +593,15 @@ export const translations = {
             outflowRangeMonth: '30 kun',
             outflowRangeAll: 'Hammasi',
             outflowEmptyFiltered: 'Filtr bo‘yicha chiqim yozuvlari topilmadi.',
+            tableIndex: '№',
+            tableImage: 'Rasm',
+            tableName: 'Mahsulot nomi',
+            tableCategory: 'Kategoriya',
+            tableQty: 'Soni',
+            tablePrice: 'Narxi',
+            tableLineValue: 'Jami qiymati',
+            grandTotal: 'UMUMIY JAMI',
+            subtotal: 'oraliq jami',
         },
         messages: {
             title: 'Xabarlar',
@@ -1262,7 +1310,33 @@ export const translations = {
                 missionImage: 'Ustaxona rasmlari',
                 missionImageHint:
                     'Bir yoki bir nechta rasm tanlang; sahifada silliq almashib turadi. Eski bitta rasm maydoni birinchi rasm sifatida saqlanadi.',
-                valuesSection: 'Qadriyatlar (3 ta)'
+                valuesSection: 'Qadriyatlar (3 ta)',
+                saveSuccess: 'Biz haqimizda ma\'lumotlari saqlandi!'
+            },
+            tabs: {
+                settings: 'Sozlamalar',
+                about: 'Biz haqimizda',
+                benefits: 'Foyda kartalari',
+                albumImages: 'Albom rasmlari',
+                banners: 'Bannerlar',
+                categories: 'Kategoriyalar',
+                products: 'Mahsulotlar',
+                orders: 'Web Buyurtmalar',
+                reviews: 'Sharhlar',
+                subscriptions: 'Obunalar'
+            },
+            settings: {
+                title: 'Sayt Sozlamalari',
+                siteName: 'Sayt nomi',
+                logoUrl: 'Logo URL',
+                heroDesktop: 'Hero Rasm (Desktop) URL',
+                heroMobile: 'Hero Rasm (Mobil) URL',
+                bannerText: 'Banner matn / Subtitle',
+                phone: 'Telefon',
+                address: 'Manzil',
+                workHours: 'Ish vaqti',
+                email: 'Email',
+                saveSuccess: 'Sozlamalar saqlandi!'
             },
             banners: {
                 newBanner: 'Yangi Banner',
@@ -1429,6 +1503,43 @@ export const translations = {
                 philippines: "Филиппины"
             }
         },
+        mobileIntake: {
+            authTitle: 'Мобильный вход',
+            authSubtitle: 'Основной логин не меняется. Ниже вход сотрудника только для отправки расхода.',
+            mainLoginCta: 'Перейти к основному CRM логину',
+            staffLoginTitle: 'Вход сотрудника (ERP pending)',
+            staffLoginCta: 'Войти как сотрудник',
+            signingIn: 'Вход...',
+            loginRequired: 'Введите email и пароль.',
+            loginRoleDenied: 'У аккаунта нет роли mobile intake.',
+            loginFailed: 'Не удалось войти.',
+            email: 'Email',
+            password: 'Пароль',
+            logout: 'Выйти',
+            notAllowed: 'У этого аккаунта нет доступа к мобильному разделу.',
+            title: 'Списанные товары',
+            addLine: 'Добавить строку',
+            customerName: 'Имя клиента',
+            productSearch: 'Поиск товара (код или название)',
+            selectProduct: 'Выберите товар',
+            selectProductFirst: 'Сначала выберите товар.',
+            qtyPlaceholder: 'Количество (шт или кг)',
+            qtyPositive: 'Количество должно быть больше 0.',
+            colorOptional: 'Цвет (необязательно)',
+            add: 'Добавить',
+            noteOptional: 'Примечание (необязательно)',
+            pendingCart: 'Строки к отправке',
+            noLinesYet: 'Пока нет добавленных строк.',
+            sendPending: 'Отправить в ERP pending',
+            sending: 'Отправка...',
+            myRequests: 'Мои отправки',
+            noRequests: 'Пока нет отправленных заявок.',
+            successSaved: 'Заявка принята.',
+            ordersVisibilityHint:
+                'Заказ виден в CRM в разделе «Заказы» для пользователей с ролями admin/CRM. У вас ниже список «Мои отправки» — очередь ERP pending.',
+            myRequestsFootnote:
+                'В режиме мобильного сотрудника отдельной вкладки «Заказы» нет; полный список заказов открывается в CRM (admin/CRM).'
+        },
         dashboard: {
             title: 'Дашборд',
             totalCustomers: 'Всего клиентов',
@@ -1524,6 +1635,8 @@ export const translations = {
             orderNumber: 'Заказ #',
             customer: 'Клиент',
             contact: 'Контакт',
+            deliveryAddress: 'Адрес доставки',
+            customerAddress: 'Адрес клиента',
             products: 'Продукты',
             total: 'Итого',
             status: 'Статус',
@@ -2571,7 +2684,8 @@ export const translations = {
                 missionImage: 'Изображения мастерской',
                 missionImageHint:
                     'Можно выбрать несколько фото; на сайте они плавно сменяются. Первое фото дублируется в поле legacy.',
-                valuesSection: 'Ценности (3 шт)'
+                valuesSection: 'Ценности (3)',
+                saveSuccess: 'Данные раздела "О нас" сохранены!'
             },
             banners: {
                 newBanner: 'Новый баннер',
@@ -2737,6 +2851,43 @@ export const translations = {
                 bangladesh: "Bangladesh",
                 philippines: "Philippines"
             }
+        },
+        mobileIntake: {
+            authTitle: 'Mobile access',
+            authSubtitle: 'Main login remains unchanged. Below is staff login only for outbound intake submission.',
+            mainLoginCta: 'Go to main CRM login',
+            staffLoginTitle: 'Staff login (ERP pending)',
+            staffLoginCta: 'Sign in as staff',
+            signingIn: 'Signing in...',
+            loginRequired: 'Enter email and password.',
+            loginRoleDenied: 'This account has no mobile intake role.',
+            loginFailed: 'Login failed.',
+            email: 'Email',
+            password: 'Password',
+            logout: 'Logout',
+            notAllowed: 'This account cannot access the mobile section.',
+            title: 'Outbound products',
+            addLine: 'Add line',
+            customerName: 'Customer name',
+            productSearch: 'Search product (code or name)',
+            selectProduct: 'Select a product',
+            selectProductFirst: 'Select product first.',
+            qtyPlaceholder: 'Quantity (pcs or kg)',
+            qtyPositive: 'Quantity must be greater than 0.',
+            colorOptional: 'Color (optional)',
+            add: 'Add',
+            noteOptional: 'Note (optional)',
+            pendingCart: 'Pending lines',
+            noLinesYet: 'No lines added yet.',
+            sendPending: 'Send to ERP pending',
+            sending: 'Sending...',
+            myRequests: 'My submissions',
+            noRequests: 'No submitted requests yet.',
+            successSaved: 'Request saved.',
+            ordersVisibilityHint:
+                'The order appears in CRM under Orders for admin/CRM roles. Below, My submissions is your ERP pending queue.',
+            myRequestsFootnote:
+                'Staff mobile mode has no separate Orders tab; the full order list is in CRM (admin/CRM).'
         },
         dashboard: {
             title: 'Dashboard',
@@ -3854,6 +4005,8 @@ export const translations = {
             tabs: {
                 settings: 'Settings',
                 about: 'About Us',
+                benefits: 'Benefit Cards',
+                albumImages: 'Album Images',
                 banners: 'Banners',
                 categories: 'Categories',
                 products: 'Products',
@@ -3872,15 +4025,7 @@ export const translations = {
                 address: 'Address',
                 workHours: 'Work Hours',
                 email: 'Email',
-                latitude: 'Latitude',
-                longitude: 'Longitude',
-                telegram: 'Telegram',
-                instagram: 'Instagram',
-                facebook: 'Facebook',
-                paymentInfo: 'Payment Info (Card numbers)',
-                humo: 'HUMO',
-                uzcard: 'UZCARD',
-                visa: 'VISA'
+                saveSuccess: 'Settings saved!'
             },
             about: {
                 title: 'About Us Page',
@@ -3896,7 +4041,8 @@ export const translations = {
                 missionImage: 'Workshop images',
                 missionImageHint:
                     'Select one or more images; they rotate smoothly on the site. The first is also stored as the legacy single-image field.',
-                valuesSection: 'Values (3 values)'
+                valuesSection: 'Values (3)',
+                saveSuccess: 'About Us data saved!'
             },
             banners: {
                 newBanner: 'New Banner',

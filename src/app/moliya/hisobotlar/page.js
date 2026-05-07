@@ -2,11 +2,37 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { api } from '@/utils/api'
 import Header from '@/components/Header'
 import MoliyaTopNav from '@/components/MoliyaTopNav'
 import { MoliyaCardSkeleton } from '@/components/MoliyaSkeletons'
-import { Award, Building2, FileSpreadsheet, ShoppingBag } from 'lucide-react'
+import {
+    ResponsiveContainer,
+    AreaChart,
+    Area,
+    XAxis,
+    YAxis,
+    CartesianGrid,
+    Tooltip,
+} from 'recharts'
+import {
+    Award,
+    Building2,
+    FileSpreadsheet,
+    ShoppingBag,
+    Calendar,
+    TrendingUp,
+    TrendingDown,
+    DollarSign,
+    ChevronRight,
+    Filter,
+    Download,
+    Users,
+    Zap,
+    ArrowUpRight,
+    ArrowDownRight,
+    Wallet
+} from 'lucide-react'
 import { useLayout } from '@/context/LayoutContext'
 import { useLanguage } from '@/context/LanguageContext'
 import { pickLocalizedName } from '@/utils/localizedName'
@@ -70,10 +96,6 @@ function buildDeptPath(deptId, depts, lang) {
     return parts.join(' / ')
 }
 
-/**
- * «Kirim chiqimlar Hisob kitob» kabi yozuvlar bo‘limiga xodim chiqimlarini qo‘shish uchun.
- * Mos kelmasa `null` — reytingda alohida qator ko‘rsatiladi.
- */
 function findLedgerDepartmentId(departments, language) {
     if (!departments?.length) return null
     const scoreDept = (d) => {
@@ -100,90 +122,33 @@ function findLedgerDepartmentId(departments, language) {
     return best >= 3 ? bestId : null
 }
 
-function computeDeptRollups(departments, directByDeptId) {
-    const children = {}
-    for (const d of departments) {
-        const pid = d.parent_id
-        if (pid == null || pid === undefined) continue
-        if (!children[pid]) children[pid] = []
-        children[pid].push(d.id)
-    }
-    const memo = {}
-    function rollup(id) {
-        if (memo[id] !== undefined) return memo[id]
-        let s = directByDeptId[id] || 0
-        const ch = children[id] || []
-        for (const c of ch) s += rollup(c)
-        memo[id] = s
-        return s
-    }
-    for (const d of departments) rollup(d.id)
-    return memo
-}
-
-async function fetchOrdersForSalesReport() {
-    const itemShapes = [
-        'quantity, subtotal, price, product_name, product_id, products (name)',
-        'quantity, subtotal, price, product_name, product_id',
-    ]
-    const orderShapes = [
-        'id, status, created_at, updated_at, total, order_items ( QUANTITY )',
-        'id, status, created_at, total, order_items ( QUANTITY )',
-    ]
-    for (const itemSel of itemShapes) {
-        for (const base of orderShapes) {
-            const sel = base.replace('QUANTITY', itemSel)
-            let r = await supabase
-                .from('orders')
-                .select(sel)
-                .order('created_at', { ascending: false })
-                .limit(5000)
-                .is('deleted_at', null)
-            if (!r.error) return r.data || []
-            const msg = String(r.error?.message || '')
-            if (/deleted_at|deleted at/i.test(msg)) {
-                r = await supabase
-                    .from('orders')
-                    .select(sel)
-                    .order('created_at', { ascending: false })
-                    .limit(5000)
-                if (!r.error) return r.data || []
-            }
-            if (!/schema|column|does not exist|42703|PGRST/i.test(msg)) break
-        }
-    }
-    return []
-}
-
 function RankMedal({ place }) {
     if (place === 0) {
         return (
-            <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 text-amber-700 border border-amber-200" title="1">
-                <Award size={16} strokeWidth={2.5} />
-            </span>
+            <div className="w-8 h-8 rounded-full bg-yellow-500/20 border border-yellow-500/50 flex items-center justify-center shadow-[0_0_15px_rgba(234,179,8,0.2)]">
+                <Award size={14} className="text-yellow-500" strokeWidth={3} />
+            </div>
         )
     }
     if (place === 1) {
         return (
-            <span
-                className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-slate-200 text-slate-700 text-xs font-bold border border-slate-300"
-                title="2"
-            >
-                2
-            </span>
+            <div className="w-8 h-8 rounded-full bg-slate-400/20 border border-slate-400/50 flex items-center justify-center">
+                <span className="text-[10px] font-black text-slate-400">02</span>
+            </div>
         )
     }
     if (place === 2) {
         return (
-            <span
-                className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-orange-100 text-orange-800 text-xs font-bold border border-orange-200"
-                title="3"
-            >
-                3
-            </span>
+            <div className="w-8 h-8 rounded-full bg-orange-600/20 border border-orange-600/50 flex items-center justify-center">
+                <span className="text-[10px] font-black text-orange-400">03</span>
+            </div>
         )
     }
-    return <span className="inline-flex w-8 justify-center text-gray-400 text-sm tabular-nums">{place + 1}</span>
+    return (
+        <div className="w-8 h-8 flex items-center justify-center">
+            <span className="text-[10px] font-black text-white/20 tabular-nums">{(place + 1).toString().padStart(2, '0')}</span>
+        </div>
+    )
 }
 
 export default function MoliyaHisobotlarPage() {
@@ -193,40 +158,29 @@ export default function MoliyaHisobotlarPage() {
     const [to, setTo] = useState(() => thisMonthRange().to)
     const [view, setView] = useState('dept')
     const [departments, setDepartments] = useState([])
+    const [partners, setPartners] = useState([])
+    const [partnerEntries, setPartnerEntries] = useState([])
     const [entries, setEntries] = useState([])
-    /** CRM xodimlar: avans + oylik to‘lovlari (sana filtri bilan) */
     const [employeePayoutLines, setEmployeePayoutLines] = useState([])
     const [loading, setLoading] = useState(true)
     const [salesOrders, setSalesOrders] = useState([])
     const [salesLoading, setSalesLoading] = useState(false)
+    const [chartCurrency, setChartCurrency] = useState('UZS')
 
     const load = useCallback(async () => {
         setLoading(true)
-        const [dRes, enRes, advRes, salRes] = await Promise.all([
-            supabase.from('departments').select('*').eq('is_active', true).order('sort_order'),
-            supabase
-                .from('material_movements')
-                .select('id, department_id, raw_material_id, unit_price_snapshot, total_cost, movement_date, note, currency')
-                .gte('movement_date', from)
-                .lte('movement_date', to),
-            supabase
-                .from('employee_advances')
-                .select('id, amount, advance_date, note')
-                .gte('advance_date', from)
-                .lte('advance_date', to),
-            supabase
-                .from('employee_salary_payments')
-                .select('id, amount, payment_date, note')
-                .gte('payment_date', from)
-                .lte('payment_date', to),
-        ])
+        try {
+            const [dRes, enRes, pRes, peRes, payRes] = await Promise.all([
+                api.get('/api/finance/departments'),
+                api.get(`/api/finance/material-movements?from=${from}&to=${to}`),
+                api.get('/api/finance/partners'),
+                api.get(`/api/finance/partner-entries?from=${from}&to=${to}`),
+                api.get(`/api/finance/payouts?from=${from}&to=${to}`)
+            ])
 
-        if (dRes.error) console.error(dRes.error)
-        else setDepartments(dRes.data || [])
-        if (enRes.error) {
-            console.error(enRes.error)
-            setEntries([])
-        } else {
+            setDepartments(dRes.data || [])
+            setPartners(pRes.data || [])
+            setPartnerEntries(peRes.data || [])
             setEntries(
                 (enRes.data || []).map((m) => ({
                     ...m,
@@ -235,69 +189,34 @@ export default function MoliyaHisobotlarPage() {
                     currency: normalizeFinCurrency(m.currency),
                 }))
             )
+            setEmployeePayoutLines(payRes.data || [])
+        } catch (error) {
+            console.error('Finance load error:', error)
+        } finally {
+            setLoading(false)
         }
-
-        const payoutLines = []
-        const missing = (err) => {
-            const m = String(err?.message || '')
-            return m.includes('Could not find') || m.includes('does not exist') || m.includes('schema cache')
-        }
-        if (advRes.error) {
-            if (!missing(advRes.error)) console.warn('employee_advances reports:', advRes.error.message)
-        } else {
-            for (const r of advRes.data || []) {
-                const d = String(r.advance_date ?? '').slice(0, 10)
-                payoutLines.push({
-                    kind: 'advance',
-                    id: `ea-${r.id}`,
-                    date: d,
-                    amount: Number(r.amount || 0),
-                    note: r.note ? String(r.note) : '',
-                })
-            }
-        }
-        if (salRes.error) {
-            if (!missing(salRes.error)) console.warn('employee_salary_payments reports:', salRes.error.message)
-        } else {
-            for (const r of salRes.data || []) {
-                const d = String(r.payment_date ?? '').slice(0, 10)
-                payoutLines.push({
-                    kind: 'salary',
-                    id: `es-${r.id}`,
-                    date: d,
-                    amount: Number(r.amount || 0),
-                    note: r.note ? String(r.note) : '',
-                })
-            }
-        }
-        setEmployeePayoutLines(payoutLines)
-        setLoading(false)
     }, [from, to])
 
     useEffect(() => {
         load()
     }, [load])
 
-    /** Har safar «Sotish» tabiga kirganda buyurtmalarni qayta yuklash — tugallangan yangilanadi */
-    useEffect(() => {
-        if (view !== 'sales') return undefined
-        let alive = true
+    const fetchSales = useCallback(async () => {
         setSalesLoading(true)
-        fetchOrdersForSalesReport()
-            .then((rows) => {
-                if (alive) setSalesOrders(rows || [])
-            })
-            .catch((err) => {
-                console.error('fetchOrdersForSalesReport:', err)
-                if (alive) setSalesOrders([])
-            })
-            .finally(() => {
-                if (alive) setSalesLoading(false)
-            })
-        return () => {
-            alive = false
+        try {
+            const res = await api.get('/api/orders')
+            setSalesOrders(res.data || [])
+        } catch (err) {
+            console.error('fetchSales error:', err)
+            setSalesOrders([])
+        } finally {
+            setSalesLoading(false)
         }
-    }, [view])
+    }, [])
+
+    useEffect(() => {
+        fetchSales()
+    }, [fetchSales])
 
     const applyRange = (range) => {
         setFrom(range.from)
@@ -309,18 +228,80 @@ export default function MoliyaHisobotlarPage() {
         [employeePayoutLines]
     )
 
-    const ledgerDeptId = useMemo(() => findLedgerDepartmentId(departments, language), [departments, language])
+    const salesInRange = useMemo(
+        () => filterCompletedOrdersInDateRange(salesOrders, from, to),
+        [salesOrders, from, to]
+    )
+    const salesAgg = useMemo(() => aggregateCompletedOrderSales(salesInRange), [salesInRange])
 
-    const entriesGrandTotals = useMemo(() => {
-        let uz = 0
-        let us = 0
+    const globalStats = useMemo(() => {
+        let incomeUZS = 0
+        let incomeUSD = 0
+        
+        for(const pe of partnerEntries) {
+            if (pe.entry_type === 'payment_in') {
+                const a = Number(pe.amount_uzs || 0)
+                if (normalizeFinCurrency(pe.currency) === 'USD') incomeUSD += a
+                else incomeUZS += a
+            }
+        }
+        // In this CRM, salesOrders often have 'total' in UZS or USD depending on tenant.
+        // We assume aggregateCompletedOrderSales returns USD based on previous tool context.
+        incomeUSD += salesAgg.totalRevenue
+
+        let expenseUZS = payrollUzsTotal
+        let expenseUSD = 0
+        
         for (const e of entries) {
             const a = Number(e.amount || 0)
-            if (normalizeFinCurrency(e.currency) === 'USD') us += a
-            else uz += a
+            if (normalizeFinCurrency(e.currency) === 'USD') expenseUSD += a
+            else expenseUZS += a
         }
-        return { UZS: uz + payrollUzsTotal, USD: us }
-    }, [entries, payrollUzsTotal])
+        for (const pe of partnerEntries) {
+            if (pe.entry_type === 'payment') {
+                const a = Number(pe.amount_uzs || 0)
+                if (normalizeFinCurrency(pe.currency) === 'USD') expenseUSD += a
+                else expenseUZS += a
+            }
+        }
+
+        return {
+            incomeUZS, incomeUSD,
+            expenseUZS, expenseUSD,
+            netUZS: incomeUZS - expenseUZS,
+            netUSD: incomeUSD - expenseUSD
+        }
+    }, [salesAgg, partnerEntries, payrollUzsTotal, entries])
+
+    const partnerSummary = useMemo(() => {
+        const stats = {}
+        for (const e of partnerEntries) {
+            const pid = e.partner_id
+            if (!stats[pid]) stats[pid] = { pid, uzsIn: 0, uzsOut: 0, usdIn: 0, usdOut: 0 }
+            const amt = Number(e.amount_uzs || 0)
+            const cur = normalizeFinCurrency(e.currency)
+            const type = e.entry_type
+            
+            if (type === 'payment') {
+                if (cur === 'USD') stats[pid].usdOut += amt
+                else stats[pid].uzsOut += amt
+            } else if (type === 'payment_in' || type === 'supply' || type === 'sale_out') {
+                if (type === 'payment_in') {
+                   if (cur === 'USD') stats[pid].usdIn += amt
+                   else stats[pid].uzsIn += amt
+                }
+            }
+        }
+        return Object.values(stats).map(s => {
+            const p = partners.find(x => x.id === s.pid)
+            return {
+                ...s,
+                partnerName: pickLocalizedName(p, language) || '...'
+            }
+        }).sort((a,b) => (b.uzsOut + b.usdOut*12500) - (a.uzsOut + a.usdOut*12500))
+    }, [partnerEntries, partners, language])
+
+    const ledgerDeptId = useMemo(() => findLedgerDepartmentId(departments, language), [departments, language])
 
     const deptRanking = useMemo(() => {
         const directUzs = {}
@@ -356,439 +337,345 @@ export default function MoliyaHisobotlarPage() {
             .sort((a, b) => b.totalUZS - a.totalUZS || b.totalUSD - a.totalUSD)
     }, [departments, entries, language, ledgerDeptId, payrollUzsTotal, t])
 
-    const dailySeries = useMemo(() => {
+    const chartSeries = useMemo(() => {
         const day = {}
-        for (const e of entries) {
-            const k = e.expense_date
-            if (!day[k]) day[k] = { date: k, uzs: 0, usd: 0 }
-            const a = Number(e.amount || 0)
-            if (normalizeFinCurrency(e.currency) === 'USD') day[k].usd += a
-            else day[k].uzs += a
+        const add = (k, incuzs, incusd, expuzs, expusd) => {
+            if (!k) return
+            const dk = k.slice(0, 10)
+            if (!day[dk]) day[dk] = { date: dk, inc: 0, exp: 0 }
+            const isUsd = chartCurrency === 'USD'
+            day[dk].inc += isUsd ? incusd : incuzs
+            day[dk].exp += isUsd ? expusd : expuzs
         }
-        for (const p of employeePayoutLines) {
-            const k = p.date
-            if (!k) continue
-            if (!day[k]) day[k] = { date: k, uzs: 0, usd: 0 }
-            day[k].uzs += Number(p.amount || 0)
-        }
-        return Object.values(day).sort((a, b) => b.date.localeCompare(a.date))
-    }, [entries, employeePayoutLines])
 
-    const monthlySeries = useMemo(() => {
-        const mon = {}
         for (const e of entries) {
-            const k = String(e.expense_date).slice(0, 7)
-            if (!mon[k]) mon[k] = { month: k, uzs: 0, usd: 0 }
             const a = Number(e.amount || 0)
-            if (normalizeFinCurrency(e.currency) === 'USD') mon[k].usd += a
-            else mon[k].uzs += a
+            if (normalizeFinCurrency(e.currency) === 'USD') add(e.expense_date, 0, 0, 0, a)
+            else add(e.expense_date, 0, 0, a, 0)
         }
         for (const p of employeePayoutLines) {
-            const k = String(p.date).slice(0, 7)
-            if (!k || k.length < 7) continue
-            if (!mon[k]) mon[k] = { month: k, uzs: 0, usd: 0 }
-            mon[k].uzs += Number(p.amount || 0)
+            add(p.date, 0, 0, Number(p.amount || 0), 0)
         }
-        return Object.values(mon).sort((a, b) => b.month.localeCompare(a.month))
-    }, [entries, employeePayoutLines])
+        for (const pe of partnerEntries) {
+            const a = Number(pe.amount_uzs || 0)
+            const isUsd = normalizeFinCurrency(pe.currency) === 'USD'
+            if (pe.entry_type === 'payment') add(pe.entry_date, 0, 0, isUsd ? 0 : a, isUsd ? a : 0)
+            if (pe.entry_type === 'payment_in') add(pe.entry_date, isUsd ? 0 : a, isUsd ? a : 0, 0, 0)
+        }
+        for (const o of salesInRange) {
+            const a = Number(o.total || 0)
+            add(o.created_at, 0, a, 0, 0)
+        }
+        
+        return Object.values(day).sort((a, b) => a.date.localeCompare(b.date))
+    }, [entries, employeePayoutLines, partnerEntries, salesInRange, chartCurrency])
 
     const ledgerRows = useMemo(() => {
         const material = entries.map((e) => ({
             id: e.id,
             date: e.expense_date,
-            deptPath: buildDeptPath(e.department_id, departments, language),
+            type: 'expense',
+            label: buildDeptPath(e.department_id, departments, language),
             amount: Number(e.amount || 0),
             currency: normalizeFinCurrency(e.currency),
             note: e.note || '',
         }))
-        const pay = employeePayoutLines.map((p) => {
-            const tag = p.kind === 'advance' ? t('finances.reportsLedgerAdvanceTag') : t('finances.reportsLedgerSalaryTag')
-            const tail = p.note?.trim() ? ` ${p.note.trim()}` : ''
+        const pay = employeePayoutLines.map((p) => ({
+            id: p.id,
+            date: p.date,
+            type: 'payroll',
+            label: t('finances.reportsLedgerPayrollDeptPath'),
+            amount: Number(p.amount || 0),
+            currency: 'UZS',
+            note: `${p.kind === 'advance' ? t('finances.reportsLedgerAdvanceTag') : t('finances.reportsLedgerSalaryTag')} ${p.note || ''}`,
+        }))
+        const part = partnerEntries.map((pe) => {
+            const p = partners.find(x => x.id === pe.partner_id)
             return {
-                id: p.id,
-                date: p.date,
-                deptPath: t('finances.reportsLedgerPayrollDeptPath'),
-                amount: Number(p.amount || 0),
-                currency: 'UZS',
-                note: `${tag}${tail}`,
+                id: `pe-${pe.id}`,
+                date: String(pe.entry_date).slice(0, 10),
+                type: 'partner',
+                label: `Partner: ${pickLocalizedName(p, language) || '...'}`,
+                amount: Number(pe.amount_uzs || 0),
+                currency: normalizeFinCurrency(pe.currency),
+                note: `[${pe.entry_type.toUpperCase()}] ${pe.description || ''}`,
             }
         })
-        return [...material, ...pay].sort((a, b) => {
-            const c = String(b.date).localeCompare(String(a.date))
-            return c !== 0 ? c : String(a.id).localeCompare(String(b.id))
-        })
-    }, [entries, departments, language, employeePayoutLines, t])
-
-    const hasAnyData =
-        deptRanking.length > 0 ||
-        dailySeries.some((r) => r.uzs > 0.01 || r.usd > 0.01) ||
-        monthlySeries.some((r) => r.uzs > 0.01 || r.usd > 0.01) ||
-        ledgerRows.length > 0
-
-    const salesInRange = useMemo(
-        () => filterCompletedOrdersInDateRange(salesOrders, from, to),
-        [salesOrders, from, to]
-    )
-    const salesAgg = useMemo(() => aggregateCompletedOrderSales(salesInRange), [salesInRange])
-    const hasSalesData = salesAgg.orderCount > 0
-
-    const showExpenseEmptyBanner =
-        !loading && !hasAnyData && ['dept', 'daily', 'monthly', 'ledger'].includes(view)
-
-    const tableScrollClass = 'max-h-[min(70vh,560px)] overflow-auto rounded-2xl border border-gray-100'
+        const sales = salesInRange.map((o) => ({
+            id: `sale-${o.id}`,
+            date: String(o.created_at).slice(0, 10),
+            type: 'sale',
+            label: 'Sales Revenue',
+            amount: Number(o.total || 0),
+            currency: 'USD',
+            note: `Order #${o.id.slice(0, 5)}`,
+        }))
+        return [...material, ...pay, ...part, ...sales].sort((a, b) => b.date.localeCompare(a.date) || String(a.id).localeCompare(String(b.id)))
+    }, [entries, departments, language, employeePayoutLines, partnerEntries, partners, salesInRange, t])
 
     return (
-        <div className="max-w-6xl mx-auto px-6 pb-16">
-            <Header title={t('finances.financeBranchReports')} toggleSidebar={toggleSidebar} />
-            <MoliyaTopNav />
-
-            <p className="text-gray-600 text-sm mb-6 leading-relaxed">{t('finances.moliyaReportsIntro')}</p>
-
-            <div className="flex flex-col lg:flex-row lg:items-end gap-4 mb-4">
-                <div className="flex flex-wrap gap-4 items-end">
-                    <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">{t('finances.panelDateFrom')}</label>
-                        <input
-                            type="date"
-                            className="px-3 py-2 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none"
-                            value={from}
-                            onChange={(e) => setFrom(e.target.value)}
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">{t('finances.panelDateTo')}</label>
-                        <input
-                            type="date"
-                            className="px-3 py-2 rounded-xl border border-gray-200 text-sm focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none"
-                            value={to}
-                            onChange={(e) => setTo(e.target.value)}
-                        />
-                    </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                    <button
-                        type="button"
-                        onClick={() => applyRange(thisMonthRange())}
-                        className="px-3 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-gray-100 hover:bg-gray-200 text-gray-800 transition-colors"
-                    >
-                        {t('finances.quickRangeThisMonth')}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => applyRange(prevMonthRange())}
-                        className="px-3 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-gray-100 hover:bg-gray-200 text-gray-800 transition-colors"
-                    >
-                        {t('finances.quickRangeLastMonth')}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => applyRange(thisYearRange())}
-                        className="px-3 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-gray-100 hover:bg-gray-200 text-gray-800 transition-colors"
-                    >
-                        {t('finances.quickRangeThisYear')}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => applyRange(last90DaysRange())}
-                        className="px-3 py-2 rounded-lg text-xs sm:text-sm font-semibold bg-gray-100 hover:bg-gray-200 text-gray-800 transition-colors"
-                    >
-                        {t('finances.quickRangeLast90Days')}
-                    </button>
-                </div>
+        <div className="min-h-screen text-slate-100 font-sans selection:bg-blue-500/30 overflow-hidden" style={{ fontFamily: "'Inter', sans-serif" }}>
+            {/* CYBER BACKGROUND WITH GRID */}
+            <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+                <div className="absolute inset-0 bg-[#070b14]" />
+                <div className="absolute inset-0 opacity-[0.08]" 
+                    style={{ backgroundImage: `linear-gradient(#ffffff 1px, transparent 1px), linear-gradient(90deg, #ffffff 1px, transparent 1px)`, backgroundSize: '40px 40px' }} 
+                />
+                <div className="absolute top-[-15%] right-[-10%] w-[1000px] h-[1000px] bg-blue-500/30 blur-[150px] rounded-full animate-pulse" />
+                <div className="absolute bottom-[-15%] left-[-10%] w-[900px] h-[900px] bg-purple-500/30 blur-[150px] rounded-full animate-pulse duration-[7s]" />
             </div>
 
-            <div className="flex flex-wrap gap-2 mb-6">
-                {['dept', 'sales', 'daily', 'monthly', 'ledger'].map((v) => (
-                    <button
-                        key={v}
-                        type="button"
-                        onClick={() => setView(v)}
-                        className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 inline-flex items-center gap-2 ${
-                            view === v ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                        }`}
-                    >
-                        {v === 'dept' && t('finances.reportsByDept')}
-                        {v === 'sales' && (
-                            <>
-                                <ShoppingBag size={16} />
-                                {t('finances.reportsSalesTab')}
-                            </>
-                        )}
-                        {v === 'daily' && t('finances.reportsDaily')}
-                        {v === 'monthly' && t('finances.reportsMonthly')}
-                        {v === 'ledger' && t('finances.reportsAllEntries')}
-                    </button>
-                ))}
-            </div>
-
-            {!loading && showExpenseEmptyBanner && (
-                <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-4 sm:px-6 sm:flex sm:items-center sm:justify-between gap-4">
-                    <div className="flex items-start gap-3 mb-3 sm:mb-0">
-                        <FileSpreadsheet size={22} className="text-amber-700 shrink-0 mt-0.5" />
-                        <div>
-                            <p className="font-semibold text-amber-950">{t('finances.noTransactions')}</p>
-                            <p className="text-sm text-amber-900/80 mt-0.5">{t('finances.reportsEmptyHint')}</p>
-                        </div>
+            <div className="w-full h-screen p-4 lg:p-6 relative z-10 flex flex-col items-center">
+                {/* MAIN CONTAINER WITH SOLID NEON BORDER */}
+                <div className="w-full max-w-[1550px] h-full bg-[#0f172a]/70 border border-blue-500/40 rounded-3xl p-4 lg:p-6 shadow-[0_0_60px_rgba(37,99,235,0.15)] backdrop-blur-2xl flex flex-col gap-6 overflow-hidden">
+                    <div className="shrink-0 flex flex-col gap-4">
+                        <Header title={t('finances.financeBranchReports')} toggleSidebar={toggleSidebar} />
+                        <MoliyaTopNav />
                     </div>
-                    <Link
-                        href="/moliya/bolimlar"
-                        className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-amber-700 text-white text-sm font-semibold hover:bg-amber-800 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-amber-600"
-                    >
-                        <Building2 size={18} />
-                        {t('finances.reportsEmptyCta')}
-                    </Link>
-                </div>
-            )}
 
-            {loading ? (
-                <MoliyaCardSkeleton />
-            ) : view === 'sales' && salesLoading ? (
-                <MoliyaCardSkeleton />
-            ) : view === 'sales' ? (
-                <div className="space-y-6">
-                    <p className="text-xs text-gray-500 leading-relaxed max-w-3xl">{t('finances.reportsSalesDateHint')}</p>
-                    <p className="text-xs text-gray-500">{t('finances.reportsSalesRankHint')}</p>
-
-                    {!hasSalesData ? (
-                        <div className="rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                            <div>
-                                <p className="font-semibold text-amber-950">{t('finances.reportsSalesEmpty')}</p>
-                                <p className="text-sm text-amber-900/80 mt-1">{t('finances.reportsSalesDateHint')}</p>
+                    <div className="flex-1 overflow-y-auto no-scrollbar pb-10 space-y-8">
+                        {/* --- HERO / SUMMARY CARDS --- */}
+                        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 animate-in fade-in duration-1000">
+                            <div className="lg:col-span-2 space-y-4 flex flex-col justify-center px-4">
+                                <h1 className="text-5xl lg:text-6xl font-black text-white tracking-tighter italic uppercase leading-[0.9] flex items-center gap-4">
+                                    <TrendingUp size={48} className="text-blue-500" />
+                                    Moliya<br/>Oqimi
+                                </h1>
+                                <p className="text-white/40 text-xs font-bold uppercase tracking-[0.2em] max-w-sm leading-relaxed">
+                                    Tizimning umumiy moliyaviy holati va barcha bo'limlar integratsiyasi.
+                                </p>
                             </div>
-                            <Link
-                                href="/buyurtmalar"
-                                className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-amber-700 text-white text-sm font-semibold hover:bg-amber-800 whitespace-nowrap"
-                            >
-                                <ShoppingBag size={18} />
-                                {t('finances.reportsSalesGoOrders')}
-                            </Link>
-                        </div>
-                    ) : (
-                        <>
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                                <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
-                                    <p className="text-xs font-bold text-gray-500 uppercase">
-                                        {t('finances.reportsSalesOrdersCount')}
-                                    </p>
-                                    <p className="text-2xl font-bold text-slate-900 mt-1 tabular-nums">
-                                        {salesAgg.orderCount}
-                                    </p>
-                                </div>
-                                <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
-                                    <p className="text-xs font-bold text-gray-500 uppercase">
-                                        {t('finances.reportsSalesPiecesTotal')}
-                                    </p>
-                                    <p className="text-2xl font-bold text-emerald-700 mt-1 tabular-nums">
-                                        {salesAgg.totalQty.toLocaleString()}
-                                    </p>
-                                </div>
-                                <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
-                                    <p className="text-xs font-bold text-gray-500 uppercase">
-                                        {t('finances.reportsSalesRevenueTotal')}
-                                    </p>
-                                    <p className="text-2xl font-bold text-blue-700 mt-1 tabular-nums">
-                                        ${salesAgg.totalRevenue.toLocaleString()}
-                                    </p>
+
+                            <div className="bg-white/[0.02] shadow-inner border border-emerald-500/40 rounded-3xl p-8 group transition-all duration-500 hover:shadow-[0_0_40px_rgba(16,185,129,0.15)] relative overflow-hidden">
+                                <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-600/5 rounded-full blur-3xl opacity-50" />
+                                <p className="text-[10px] font-black uppercase tracking-[0.4em] text-emerald-500/50 mb-3 flex items-center gap-2">
+                                    <ArrowUpRight size={14} /> Umumiy Kirim
+                                </p>
+                                <div className="space-y-1">
+                                    {globalStats.incomeUZS > 0.01 && <p className="text-3xl font-black text-white tracking-tighter italic">{formatFinAmount(globalStats.incomeUZS, 'UZS')}</p>}
+                                    <p className="text-xl font-black text-emerald-500 tracking-tighter italic tabular-nums">${globalStats.incomeUSD.toLocaleString()}</p>
                                 </div>
                             </div>
 
-                            <div className={`bg-white shadow-sm ${tableScrollClass}`}>
-                                <table className="w-full text-sm">
-                                    <thead className="sticky top-0 z-10">
-                                        <tr className="bg-gray-100 text-left text-gray-800 shadow-[0_1px_0_0_rgb(229,231,235)]">
-                                            <th className="px-4 py-3 font-semibold w-14" />
-                                            <th className="px-4 py-3 font-semibold">{t('finances.reportsSalesProductCol')}</th>
-                                            <th className="px-4 py-3 font-semibold text-right">{t('finances.reportsSalesQtyCol')}</th>
-                                            <th className="px-4 py-3 font-semibold text-right">{t('finances.reportsSalesRevenueCol')}</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {salesAgg.byProduct.map((r, i) => (
-                                            <tr
-                                                key={r.key}
-                                                className="border-t border-gray-100 bg-white hover:bg-blue-50/40 transition-colors"
-                                            >
-                                                <td className="px-4 py-3 align-middle">
-                                                    <RankMedal place={i} />
-                                                </td>
-                                                <td className="px-4 py-3 font-medium text-gray-900">{r.name}</td>
-                                                <td className="px-4 py-3 text-right font-semibold tabular-nums">
-                                                    {r.qty.toLocaleString()}
-                                                </td>
-                                                <td className="px-4 py-3 text-right font-medium tabular-nums">
-                                                    ${r.revenue.toLocaleString()}
-                                                </td>
+                            <div className="bg-white/[0.02] shadow-inner border border-rose-500/40 rounded-3xl p-8 group transition-all duration-500 hover:shadow-[0_0_40px_rgba(244,63,94,0.15)] relative overflow-hidden">
+                                <div className="absolute top-0 right-0 w-32 h-32 bg-rose-600/5 rounded-full blur-3xl opacity-50" />
+                                <p className="text-[10px] font-black uppercase tracking-[0.4em] text-rose-500/50 mb-3 flex items-center gap-2">
+                                    <ArrowDownRight size={14} /> Umumiy Chiqim
+                                </p>
+                                <div className="space-y-1">
+                                    {globalStats.expenseUZS > 0.01 && <p className="text-3xl font-black text-white tracking-tighter italic">{formatFinAmount(globalStats.expenseUZS, 'UZS')}</p>}
+                                    <p className="text-xl font-black text-rose-500 tracking-tighter italic tabular-nums">${globalStats.expenseUSD.toLocaleString()}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* --- MAIN CHART SECTION --- */}
+                        <div className="bg-white/[0.02] shadow-inner border border-white/10 p-8 rounded-3xl animate-in fade-in zoom-in-95 duration-700 relative overflow-hidden group">
+                            <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-blue-600/5 rounded-full blur-3xl -mr-32 -mt-32 pointer-events-none" />
+                            
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6 relative z-10 mb-8">
+                               <div className="space-y-1">
+                                   <h3 className="text-xl font-black text-white uppercase italic tracking-widest leading-none">Moliya Dinamikasi</h3>
+                                   <p className="text-[10px] font-bold text-white/30 uppercase tracking-[0.4em]">Kirim va Chiqim nazorati</p>
+                               </div>
+                               
+                               <div className="flex bg-white/[0.03] shadow-inner p-1.5 rounded-xl border border-white/10 backdrop-blur-xl">
+                                    {['UZS', 'USD'].map((c) => (
+                                        <button key={c} onClick={() => setChartCurrency(c)} className={`px-6 py-2 rounded-lg text-[10px] font-black tracking-widest transition-all ${chartCurrency === c ? 'bg-blue-600 text-white shadow-[0_0_20px_rgba(37,99,235,0.3)]' : 'text-white/30 hover:text-white hover:bg-white/5'}`}>
+                                            {c}
+                                        </button>
+                                    ))}
+                               </div>
+                            </div>
+
+                            <div className="h-[300px] w-full relative z-10 pr-4">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <AreaChart data={chartSeries}>
+                                        <defs>
+                                            <linearGradient id="colorInc" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.15}/>
+                                                <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                                            </linearGradient>
+                                            <linearGradient id="colorExp" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.15}/>
+                                                <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                                            </linearGradient>
+                                        </defs>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" vertical={false} />
+                                        <XAxis dataKey="date" tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.3)', fontWeight: 900 }} axisLine={false} tickLine={false} />
+                                        <YAxis tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.3)', fontWeight: 900 }} axisLine={false} tickLine={false} />
+                                        <Tooltip 
+                                            contentStyle={{ backgroundColor: '#0f172a', borderRadius: '1rem', border: '1px solid rgba(255,255,255,0.15)', color: '#fff', fontSize: '10px' }}
+                                            itemStyle={{ fontWeight: 900, textTransform: 'uppercase' }}
+                                        />
+                                        <Area type="monotone" dataKey="inc" name="Kirim" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorInc)" />
+                                        <Area type="monotone" dataKey="exp" name="Chiqim" stroke="#f43f5e" strokeWidth={3} fillOpacity={1} fill="url(#colorExp)" />
+                                    </AreaChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </div>
+
+                        {/* --- TABS --- */}
+                        <div className="flex flex-wrap gap-3">
+                            {[
+                                { id: 'dept', label: t('finances.reportsByDept'), icon: Building2 },
+                                { id: 'partners', label: "Hamkorlar Tahlili", icon: Users },
+                                { id: 'sales', label: t('finances.reportsSalesTab'), icon: ShoppingBag },
+                                { id: 'ledger', label: t('finances.reportsAllEntries'), icon: FileSpreadsheet },
+                            ].map((item) => (
+                                <button
+                                    key={item.id}
+                                    onClick={() => setView(item.id)}
+                                    className={`group px-6 py-4 rounded-2xl border transition-all duration-300 flex items-center gap-3 ${
+                                        view === item.id 
+                                            ? 'bg-blue-600 border-blue-500 text-white shadow-[0_0_30px_rgba(37,99,235,0.3)]' 
+                                            : 'bg-white/[0.02] border-white/10 shadow-inner text-white/40 hover:border-blue-500/30 hover:bg-blue-500/5 hover:text-white'
+                                    }`}
+                                >
+                                    <item.icon size={16} className={view === item.id ? 'text-white' : 'text-white/20 group-hover:text-blue-400 transition-colors'} />
+                                    <span className="text-[10px] font-black uppercase tracking-[0.2em]">{item.label}</span>
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* --- DYNAMIC TABLES --- */}
+                        <div className="bg-white/[0.02] shadow-inner border border-white/10 rounded-3xl overflow-hidden animate-in fade-in duration-700">
+                            {loading ? (
+                                <div className="p-8"><MoliyaCardSkeleton /></div>
+                            ) : view === 'sales' ? (
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left">
+                                        <thead>
+                                            <tr className="border-b border-white/5 text-[9px] font-black text-white/30 uppercase tracking-[0.3em] bg-white/[0.01]">
+                                                <th className="px-6 py-5 w-16 text-center">#</th>
+                                                <th className="px-6 py-5">Mahsulot Nomi</th>
+                                                <th className="px-6 py-5 text-right">Sotuv Soni</th>
+                                                <th className="px-6 py-5 text-right">Tushum</th>
                                             </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </>
-                    )}
-                </div>
-            ) : view === 'dept' ? (
-                <div className={`bg-white shadow-sm ${tableScrollClass}`}>
-                    <table className="w-full text-sm">
-                        <thead className="sticky top-0 z-10">
-                            <tr className="bg-gray-100 text-left text-gray-800 shadow-[0_1px_0_0_rgb(229,231,235)]">
-                                <th className="px-4 py-3 font-semibold w-14" />
-                                <th className="px-4 py-3 font-semibold">{t('finances.reportsColDeptPath')}</th>
-                                <th className="px-4 py-3 font-semibold text-right whitespace-nowrap">
-                                    {t('finances.reportsTotalUzsCol')}
-                                </th>
-                                <th className="px-4 py-3 font-semibold text-right whitespace-nowrap">
-                                    {t('finances.reportsTotalUsdCol')}
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {deptRanking.length === 0 && (
-                                <tr>
-                                    <td colSpan={4} className="px-4 py-10 text-center text-gray-400 bg-white">
-                                        {t('finances.noTransactions')}
-                                    </td>
-                                </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-white/5">
+                                            {salesAgg.byProduct.length === 0 && (
+                                                <tr><td colSpan={4} className="px-6 py-20 text-center text-[10px] uppercase font-black tracking-widest text-white/20">Ma'lumot topilmadi</td></tr>
+                                            )}
+                                            {salesAgg.byProduct.map((r, i) => (
+                                                <tr key={r.key} className="group hover:bg-white/[0.02] transition-colors cursor-pointer">
+                                                    <td className="px-6 py-4 flex justify-center"><RankMedal place={i} /></td>
+                                                    <td className="px-6 py-4 font-black text-white uppercase tracking-tighter italic text-sm">{r.name}</td>
+                                                    <td className="px-6 py-4 text-right font-mono text-emerald-400 font-black text-lg italic tabular-nums">{r.qty.toLocaleString()}</td>
+                                                    <td className="px-6 py-4 text-right font-mono text-blue-400 font-black text-lg italic tabular-nums">${r.revenue.toLocaleString()}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : view === 'partners' ? (
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left">
+                                        <thead>
+                                            <tr className="border-b border-white/5 text-[9px] font-black text-white/30 uppercase tracking-[0.3em] bg-white/[0.01]">
+                                                <th className="px-6 py-5 w-16 text-center">#</th>
+                                                <th className="px-6 py-5">Hamkor Nomlanishi</th>
+                                                <th className="px-6 py-5 text-right">Kirim (Tushum)</th>
+                                                <th className="px-6 py-5 text-right">Chiqim (To'lov)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-white/5">
+                                            {partnerSummary.length === 0 && (
+                                                <tr><td colSpan={4} className="px-6 py-20 text-center text-[10px] uppercase font-black tracking-widest text-white/20">Ma'lumot topilmadi</td></tr>
+                                            )}
+                                            {partnerSummary.map((s, i) => (
+                                                <tr key={s.pid} className="group hover:bg-white/[0.02] transition-colors cursor-pointer">
+                                                    <td className="px-6 py-4 flex justify-center"><RankMedal place={i} /></td>
+                                                    <td className="px-6 py-4 font-black text-white/80 uppercase tracking-tighter italic text-sm group-hover:text-white transition-colors">{s.partnerName}</td>
+                                                    <td className="px-6 py-4 text-right font-mono text-emerald-400 font-black text-base italic tabular-nums">
+                                                        {s.uzsIn > 0.01 ? formatFinAmount(s.uzsIn, 'UZS') : '—'}
+                                                        {s.usdIn > 0.01 && <div className="text-[9px] text-emerald-400/60 mt-0.5">{formatFinAmount(s.usdIn, 'USD')}</div>}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-right font-mono text-rose-400 font-black text-base italic tabular-nums">
+                                                        {s.uzsOut > 0.01 ? formatFinAmount(s.uzsOut, 'UZS') : '—'}
+                                                        {s.usdOut > 0.01 && <div className="text-[9px] text-rose-400/60 mt-0.5">{formatFinAmount(s.usdOut, 'USD')}</div>}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : view === 'dept' ? (
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left">
+                                        <thead>
+                                            <tr className="border-b border-white/5 text-[9px] font-black text-white/30 uppercase tracking-[0.3em] bg-white/[0.01]">
+                                                <th className="px-6 py-5 w-16 text-center">#</th>
+                                                <th className="px-6 py-5">Bo'lim Manzili</th>
+                                                <th className="px-6 py-5 text-right">{t('finances.reportsTotalUzsCol')}</th>
+                                                <th className="px-6 py-5 text-right">{t('finances.reportsTotalUsdCol')}</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-white/5">
+                                            {deptRanking.length === 0 && (
+                                                <tr><td colSpan={4} className="px-6 py-20 text-center text-[10px] uppercase font-black tracking-widest text-white/20">Ma'lumot topilmadi</td></tr>
+                                            )}
+                                            {deptRanking.map((r, i) => (
+                                                <tr key={r.id} className="group hover:bg-white/[0.02] transition-colors cursor-pointer">
+                                                    <td className="px-6 py-4 flex justify-center"><RankMedal place={i} /></td>
+                                                    <td className="px-6 py-4 font-black text-white/80 uppercase tracking-tighter italic text-sm group-hover:text-white transition-colors">{r.path}</td>
+                                                    <td className="px-6 py-4 text-right font-mono text-white font-black text-base italic tabular-nums group-hover:text-emerald-400 transition-colors">
+                                                        {r.totalUZS > 0.01 ? formatFinAmount(r.totalUZS, 'UZS') : '—'}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-right font-mono text-white font-black text-base italic tabular-nums group-hover:text-blue-400 transition-colors">
+                                                        {r.totalUSD > 0.01 ? formatFinAmount(r.totalUSD, 'USD') : '—'}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : (
+                                <div className="overflow-x-auto">
+                                    <table className="w-full min-w-[800px] text-left">
+                                        <thead>
+                                            <tr className="border-b border-white/5 text-[9px] font-black text-white/30 uppercase tracking-[0.3em] bg-white/[0.01]">
+                                                <th className="px-6 py-5 w-32">{t('finances.date')}</th>
+                                                <th className="px-6 py-5">Tranzaksiya Turi</th>
+                                                <th className="px-6 py-5 text-right">{t('finances.amountWithCurrency')}</th>
+                                                <th className="px-6 py-5 w-1/3">Izoh/Tafsilot</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-white/5">
+                                            {ledgerRows.length === 0 && (
+                                                <tr><td colSpan={4} className="px-6 py-20 text-center text-[10px] uppercase font-black tracking-widest text-white/20">Ma'lumot topilmadi</td></tr>
+                                            )}
+                                            {ledgerRows.map((r) => (
+                                                <tr key={r.id} className="group hover:bg-white/[0.02] transition-colors cursor-pointer">
+                                                    <td className="px-6 py-4 font-mono text-white/40 group-hover:text-white/70 transition-colors text-[10px] font-black tabular-nums">{r.date}</td>
+                                                    <td className="px-6 py-4">
+                                                        <div className="flex flex-col">
+                                                            <span className="text-[8px] font-black text-blue-500/60 uppercase tracking-widest mb-0.5">{r.type}</span>
+                                                            <span className="font-black text-white/80 uppercase tracking-tight text-xs group-hover:text-white transition-all max-w-[200px] truncate" title={r.label}>{r.label}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-6 py-4 text-right font-mono font-black text-base tabular-nums text-white group-hover:text-emerald-400 transition-colors">
+                                                        {formatFinAmount(r.amount, r.currency)}
+                                                        <span className="text-[7px] ml-1 uppercase text-white/30">{r.currency}</span>
+                                                    </td>
+                                                    <td className="px-6 py-4 text-white/50 text-[11px] font-medium group-hover:text-white/80 transition-colors max-w-xs truncate" title={r.note}>
+                                                        {r.note || '—'}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
                             )}
-                            {deptRanking.map((r, i) => (
-                                <tr key={r.id} className="border-t border-gray-100 bg-white hover:bg-blue-50/40 transition-colors">
-                                    <td className="px-4 py-3 align-middle">
-                                        <RankMedal place={i} />
-                                    </td>
-                                    <td className="px-4 py-3 font-medium text-gray-900">{r.path}</td>
-                                    <td className="px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap">
-                                        {r.totalUZS > 0.01 ? formatFinAmount(r.totalUZS, 'UZS') : '—'}
-                                    </td>
-                                    <td className="px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap">
-                                        {r.totalUSD > 0.01 ? formatFinAmount(r.totalUSD, 'USD') : '—'}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                        {deptRanking.length > 0 && (
-                            <tfoot>
-                                <tr className="bg-slate-50 border-t-2 border-slate-200 text-slate-900">
-                                    <td className="px-4 py-3" />
-                                    <td className="px-4 py-3 font-semibold">{t('finances.reportsGrandTotal')}</td>
-                                    <td className="px-4 py-3 text-right font-bold tabular-nums whitespace-nowrap">
-                                        {entriesGrandTotals.UZS > 0.01 ? formatFinAmount(entriesGrandTotals.UZS, 'UZS') : '—'}
-                                    </td>
-                                    <td className="px-4 py-3 text-right font-bold tabular-nums whitespace-nowrap">
-                                        {entriesGrandTotals.USD > 0.01 ? formatFinAmount(entriesGrandTotals.USD, 'USD') : '—'}
-                                    </td>
-                                </tr>
-                            </tfoot>
-                        )}
-                    </table>
+                        </div>
+                    </div>
                 </div>
-            ) : view === 'daily' ? (
-                <div className={`bg-white shadow-sm ${tableScrollClass}`}>
-                    <table className="w-full text-sm">
-                        <thead className="sticky top-0 z-10">
-                            <tr className="bg-gray-100 text-left text-gray-800 shadow-[0_1px_0_0_rgb(229,231,235)]">
-                                <th className="px-4 py-3 font-semibold">{t('finances.reportsDateCol')}</th>
-                                <th className="px-4 py-3 font-semibold text-right whitespace-nowrap">
-                                    {t('finances.reportsTotalUzsCol')}
-                                </th>
-                                <th className="px-4 py-3 font-semibold text-right whitespace-nowrap">
-                                    {t('finances.reportsTotalUsdCol')}
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {dailySeries.length === 0 && (
-                                <tr>
-                                    <td colSpan={3} className="px-4 py-10 text-center text-gray-400 bg-white">
-                                        {t('finances.noTransactions')}
-                                    </td>
-                                </tr>
-                            )}
-                            {dailySeries.map((r) => (
-                                <tr key={r.date} className="border-t border-gray-100 bg-white hover:bg-gray-50 transition-colors">
-                                    <td className="px-4 py-3 whitespace-nowrap">{r.date}</td>
-                                    <td className="px-4 py-3 text-right font-medium tabular-nums whitespace-nowrap">
-                                        {r.uzs > 0.01 ? formatFinAmount(r.uzs, 'UZS') : '—'}
-                                    </td>
-                                    <td className="px-4 py-3 text-right font-medium tabular-nums whitespace-nowrap">
-                                        {r.usd > 0.01 ? formatFinAmount(r.usd, 'USD') : '—'}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            ) : view === 'monthly' ? (
-                <div className={`bg-white shadow-sm ${tableScrollClass}`}>
-                    <table className="w-full text-sm">
-                        <thead className="sticky top-0 z-10">
-                            <tr className="bg-gray-100 text-left text-gray-800 shadow-[0_1px_0_0_rgb(229,231,235)]">
-                                <th className="px-4 py-3 font-semibold">{t('finances.reportsDateCol')}</th>
-                                <th className="px-4 py-3 font-semibold text-right whitespace-nowrap">
-                                    {t('finances.reportsTotalUzsCol')}
-                                </th>
-                                <th className="px-4 py-3 font-semibold text-right whitespace-nowrap">
-                                    {t('finances.reportsTotalUsdCol')}
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {monthlySeries.length === 0 && (
-                                <tr>
-                                    <td colSpan={3} className="px-4 py-10 text-center text-gray-400 bg-white">
-                                        {t('finances.noTransactions')}
-                                    </td>
-                                </tr>
-                            )}
-                            {monthlySeries.map((r) => (
-                                <tr key={r.month} className="border-t border-gray-100 bg-white hover:bg-gray-50 transition-colors">
-                                    <td className="px-4 py-3">{r.month}</td>
-                                    <td className="px-4 py-3 text-right font-medium tabular-nums whitespace-nowrap">
-                                        {r.uzs > 0.01 ? formatFinAmount(r.uzs, 'UZS') : '—'}
-                                    </td>
-                                    <td className="px-4 py-3 text-right font-medium tabular-nums whitespace-nowrap">
-                                        {r.usd > 0.01 ? formatFinAmount(r.usd, 'USD') : '—'}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            ) : (
-                <div className={`bg-white shadow-sm ${tableScrollClass} overflow-x-auto`}>
-                    <table className="w-full text-sm min-w-[560px]">
-                        <thead className="sticky top-0 z-10">
-                            <tr className="bg-gray-100 text-left text-gray-800 shadow-[0_1px_0_0_rgb(229,231,235)]">
-                                <th className="px-4 py-3 font-semibold whitespace-nowrap">{t('finances.date')}</th>
-                                <th className="px-4 py-3 font-semibold">{t('finances.reportsColDeptPath')}</th>
-                                <th className="px-4 py-3 font-semibold text-right whitespace-nowrap">
-                                    {t('finances.amountWithCurrency')}
-                                </th>
-                                <th className="px-4 py-3 font-semibold">{t('finances.costNote')}</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {ledgerRows.length === 0 && (
-                                <tr>
-                                    <td colSpan={4} className="px-4 py-10 text-center text-gray-400 bg-white">
-                                        {t('finances.noTransactions')}
-                                    </td>
-                                </tr>
-                            )}
-                            {ledgerRows.map((r) => (
-                                <tr key={r.id} className="border-t border-gray-100 bg-white hover:bg-gray-50 transition-colors">
-                                    <td className="px-4 py-3 whitespace-nowrap align-top">{r.date}</td>
-                                    <td className="px-4 py-3 align-top text-gray-800">{r.deptPath}</td>
-                                    <td className="px-4 py-3 text-right font-medium tabular-nums align-top whitespace-nowrap">
-                                        {formatFinAmount(r.amount, r.currency)}
-                                    </td>
-                                    <td className="px-4 py-3 text-gray-600 max-w-[280px] align-top" title={r.note || undefined}>
-                                        <span className="line-clamp-2">{r.note || '—'}</span>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
+            </div>
+            
+            <style jsx global>{`
+                .no-scrollbar::-webkit-scrollbar { display: none; }
+                .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+            `}</style>
         </div>
     )
 }

@@ -1,276 +1,142 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
-import { supabase } from '@/lib/supabase'
-import { ShoppingCart, Search, X, Package, Phone, Calendar, SearchX, Loader2 } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { 
+    Search, 
+    ShoppingCart, 
+    Package, 
+    X,
+    DollarSign,
+    Tag,
+    ChevronRight
+} from 'lucide-react'
 
-function normalizeStatusKey(status) {
-    const s = String(status || '').trim().toLowerCase()
-    if (s === 'yangi' || s === 'new') return 'new'
-    if (s === 'jarayonda' || s === 'pending') return 'pending'
-    if (s === 'tugallangan' || s === 'tugallandi' || s === 'completed') return 'completed'
-    if (s === 'bekor qilingan' || s === 'cancelled' || s === 'canceled') return 'cancelled'
-    return ''
-}
-
-function statusLabelForKey(key) {
-    if (key === 'new') return 'Yangi'
-    if (key === 'pending') return 'Jarayonda'
-    if (key === 'completed') return 'Tugallangan'
-    if (key === 'cancelled') return 'Bekor qilingan'
-    return ''
-}
-
-export default function OrdersView({ initialStatusFilter = null, statusFilterToken = 0 }) {
-    const [loading, setLoading] = useState(true)
-    const [orders, setOrders] = useState([])
+export default function OrdersView({ orders = [] }) {
     const [searchQuery, setSearchQuery] = useState('')
+    const [statusFilter, setStatusFilter] = useState('all')
     const [selectedOrder, setSelectedOrder] = useState(null)
-    const [statusFilter, setStatusFilter] = useState(initialStatusFilter)
 
-    useEffect(() => {
-        fetchOrders()
+    const filteredOrders = useMemo(() => {
+        return orders.filter(o => {
+            const matchesSearch = (o.customer_name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+                                 (o.order_number || o.id?.toString() || '').toLowerCase().includes(searchQuery.toLowerCase())
+            const matchesStatus = statusFilter === 'all' || o.status === statusFilter
+            return matchesSearch && matchesStatus
+        })
+    }, [orders, searchQuery, statusFilter])
 
-        const channel = supabase
-            .channel('mobile_orders_view')
-            .on('postgres_changes',
-                { event: '*', schema: 'public', table: 'orders' },
-                () => fetchOrders() // silently refetch
-            )
-            .subscribe()
-
-        return () => {
-            supabase.removeChannel(channel)
-        }
-    }, [])
-
-    useEffect(() => {
-        setStatusFilter(initialStatusFilter || null)
-    }, [initialStatusFilter, statusFilterToken])
-
-    async function fetchOrders() {
-        try {
-            const { data, error } = await supabase
-                .from('orders')
-                .select(`*, customers(name, phone), order_items(*, products(*))`)
-                .is('deleted_at', null)
-                .order('created_at', { ascending: false })
-                .limit(50)
-
-            // Fallback if deleted_at column is missing
-            if (error && error.message.includes('deleted_at')) {
-                const retry = await supabase
-                    .from('orders')
-                    .select(`*, customers(name, phone), order_items(*, products(*))`)
-                    .order('created_at', { ascending: false })
-                    .limit(50)
-                
-                if (retry.data) setOrders(retry.data)
-            } else if (data) {
-                setOrders(data)
-            }
-        } catch (err) {
-            console.error('Error fetching orders:', err)
-        } finally {
-            setLoading(false)
-        }
-    }
-
-    const filteredOrders = useMemo(() => orders.filter(o => {
-        if (statusFilter) {
-            const key = normalizeStatusKey(o.status)
-            if (key !== statusFilter) return false
-        }
-        const cName = o.customer_name || o.customers?.name || ''
-        const cPhone = o.customer_phone || o.customers?.phone || ''
-        return (o.id && String(o.id).includes(searchQuery)) ||
-               (cName && cName.toLowerCase().includes(searchQuery.toLowerCase())) ||
-               (cPhone && cPhone.includes(searchQuery))
-    }), [orders, searchQuery, statusFilter])
-
-    const formatCurrency = (amount) => {
-        return "$" + Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    }
-
-    const getStatusStyle = (status) => {
-        const s = String(status).toLowerCase()
-        if (s === 'yangi' || s === 'new') return 'bg-blue-500/10 border-blue-500/20 text-blue-400'
-        if (s === 'jarayonda' || s === 'pending') return 'bg-amber-500/10 border-amber-500/20 text-amber-400'
-        if (s === 'tugallangan' || s === 'tugallandi' || s === 'completed') return 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-        return 'bg-rose-500/10 border-rose-500/20 text-rose-400'
-    }
-
-    if (loading) {
-        return (
-            <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4">
-                <Loader2 className="w-10 h-10 text-indigo-500 animate-spin" />
-                <p className="text-slate-400 font-medium animate-pulse">Buyurtmalar yuklanmoqda...</p>
-            </div>
-        )
-    }
+    const statuses = [
+        { id: 'all', label: 'Hammasi' },
+        { id: 'new', label: 'Yangi' },
+        { id: 'pending', label: 'Jarayonda' },
+        { id: 'completed', label: 'Tayyor' },
+        { id: 'cancelled', label: 'Bekor' }
+    ]
 
     return (
-        <div className="flex flex-col h-full">
-            <div className="p-6 pb-2 space-y-6">
+        <div className="p-6 space-y-8 bg-[#FDFBF7] min-h-screen">
+            {/* Header */}
+            <header className="flex flex-col space-y-6">
                 <div>
-                    <h1 className="text-2xl font-bold text-white tracking-tight mb-2">Buyurtmalar</h1>
-                    <p className="text-sm font-medium text-slate-400">Jami topilgan: {filteredOrders.length} ta</p>
-                    {statusFilter ? (
-                        <div className="mt-2 inline-flex items-center gap-2 rounded-lg border border-indigo-400/20 bg-indigo-500/10 px-2.5 py-1.5">
-                            <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-300">
-                                Status:
-                            </span>
-                            <span className="text-xs font-bold text-indigo-100">
-                                {statusLabelForKey(statusFilter)}
-                            </span>
-                            <button
-                                type="button"
-                                onClick={() => setStatusFilter(null)}
-                                className="text-[10px] font-bold text-indigo-200/90 hover:text-white transition-colors"
-                            >
-                                Tozalash
-                            </button>
-                        </div>
-                    ) : null}
+                    <h2 className="text-2xl font-black text-[#2D241E] tracking-tight uppercase italic">Buyurtmalar</h2>
+                    <p className="text-[10px] font-bold text-[#8B5E3C]/60 uppercase tracking-[0.2em] mt-1">Jami {orders.length} ta</p>
                 </div>
 
-                <div className="relative">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-                    <input 
-                        type="text" 
-                        value={searchQuery}
-                        onChange={e => setSearchQuery(e.target.value)}
-                        placeholder="Mijoz ismi, ID yoki raqam..."
-                        className="w-full bg-slate-900 border border-white/10 rounded-2xl pl-12 pr-4 py-4 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors shadow-inner"
-                    />
-                </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto px-6 pb-24 space-y-3">
-                {filteredOrders.length > 0 ? (
-                    filteredOrders.map(order => (
-                        <div 
-                            key={order.id} 
-                            onClick={() => setSelectedOrder(order)}
-                            className="bg-slate-900 border border-white/5 rounded-3xl p-5 shadow-lg active:scale-[0.98] transition-all cursor-pointer"
-                        >
-                            <div className="flex items-center justify-between mb-4">
-                                <div className="flex items-center gap-2 text-slate-400 text-xs font-bold font-mono">
-                                    <span className="px-2 py-1 bg-white/5 rounded-md">#{String(order.id).slice(0, 8)}</span>
-                                </div>
-                                <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-lg border ${getStatusStyle(order.status)}`}>
-                                    {order.status}
-                                </span>
-                            </div>
-
-                            <div className="mb-4">
-                                <h3 className="text-lg font-bold text-white mb-1">
-                                    {order.customer_name || order.customers?.name || "Noma'lum"}
-                                </h3>
-                                {(order.customer_phone || order.customers?.phone) && (
-                                    <div className="flex items-center gap-1.5 text-sm font-medium text-slate-400">
-                                        <Phone size={14} />
-                                        {order.customer_phone || order.customers?.phone}
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="flex items-center justify-between pt-4 border-t border-white/5">
-                                <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                                    <Calendar size={14} />
-                                    {new Date(order.created_at).toLocaleDateString('uz-UZ')}
-                                </div>
-                                <div className="text-base font-bold text-indigo-400">
-                                    {formatCurrency(order.total)}
-                                </div>
-                            </div>
-                        </div>
-                    ))
-                ) : (
-                    <div className="flex flex-col items-center justify-center py-16 text-center">
-                        <SearchX className="w-16 h-16 text-slate-700 mb-4" />
-                        <h3 className="text-lg font-bold text-white mb-2">Hech narsa topilmadi</h3>
-                        <p className="text-sm font-medium text-slate-500">Boshqa so'z bilan qidirib ko'ring</p>
+                {/* Search & Filter */}
+                <div className="space-y-4">
+                    <div className="relative">
+                        <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-[#2D241E]/20" size={18} />
+                        <input 
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Qidiruv..."
+                            className="w-full bg-white border border-[#E8E2D9] rounded-2xl pl-14 pr-6 py-4 text-sm text-[#2D241E] shadow-sm outline-none font-medium"
+                        />
                     </div>
-                )}
-            </div>
+                    <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                        {statuses.map(s => (
+                            <button 
+                                key={s.id}
+                                onClick={() => setStatusFilter(s.id)}
+                                className={`px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all ${
+                                    statusFilter === s.id ? 'bg-[#2D241E] text-white' : 'bg-white text-[#2D241E]/30 border border-[#E8E2D9]'
+                                }`}
+                            >
+                                {s.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            </header>
 
-            {/* Bottom Sheet for Order Details */}
-            {selectedOrder && (
-                <div className="fixed inset-0 z-[100] flex flex-col justify-end items-center">
+            {/* Orders List */}
+            <div className="space-y-4 pb-24">
+                {filteredOrders.length === 0 ? (
+                    <div className="py-20 text-center opacity-10">
+                        <Package size={64} className="mx-auto mb-4" />
+                        <p className="text-[10px] font-black uppercase tracking-[0.4em]">Topilmadi</p>
+                    </div>
+                ) : filteredOrders.map(order => (
                     <div 
-                        className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm transition-opacity" 
-                        onClick={() => setSelectedOrder(null)} 
-                    />
-                    <div className="relative w-full max-w-lg bg-slate-900 border-t border-white/10 rounded-t-3xl shadow-2xl p-6 pb-safe flex flex-col max-h-[85vh] animate-in slide-in-from-bottom duration-300">
-                        <button 
-                            onClick={() => setSelectedOrder(null)}
-                            className="absolute top-4 right-4 p-2 bg-white/5 rounded-full text-slate-400 hover:text-white transition-colors z-10"
-                        >
-                            <X size={20} />
-                        </button>
-
-                        <div className="mb-6 pr-8">
-                            <h2 className="text-xl font-bold text-white tracking-tight mb-2">
-                                Buyurtma tafsiloti
-                            </h2>
-                            <p className="text-sm font-medium text-slate-400 font-mono">
-                                ID: #{String(selectedOrder.id)}
+                        key={order.id} 
+                        onClick={() => setSelectedOrder(order)}
+                        className="bg-white border border-[#E8E2D9] rounded-[2rem] p-6 shadow-sm active:scale-[0.98] transition-all flex items-center justify-between"
+                    >
+                        <div className="flex-1 min-w-0 pr-4">
+                            <h3 className="text-[13px] font-black text-[#2D241E] uppercase italic truncate">{order.customer_name}</h3>
+                            <p className="text-[9px] font-black text-[#8B5E3C] uppercase tracking-widest mt-1">
+                                {order.status === 'new' ? 'Yangi' : order.status === 'pending' ? 'Jarayonda' : order.status === 'completed' ? 'Tayyor' : 'Bekor'}
                             </p>
                         </div>
+                        <div className="text-right">
+                            <p className="text-[14px] font-black text-[#2D241E]">${Number(order.total || 0).toLocaleString()}</p>
+                            <ChevronRight size={16} className="text-[#2D241E]/10 ml-auto mt-1" />
+                        </div>
+                    </div>
+                ))}
+            </div>
 
-                        <div className="flex-1 overflow-y-auto pr-2 space-y-4 mb-6">
-                            <div className="p-4 rounded-2xl bg-white/5 border border-white/5">
-                                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-3">
-                                    Mahsulotlar Ro'yxati
-                                </h3>
-                                <div className="space-y-3">
-                                    {selectedOrder.order_items && selectedOrder.order_items.length > 0 ? (
-                                        selectedOrder.order_items.map((item, idx) => (
-                                            <div key={idx} className="flex justify-between items-start gap-3 pb-3 border-b border-white/5 last:border-0 last:pb-0">
-                                                <div className="flex gap-3">
-                                                    <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center shrink-0">
-                                                        <Package size={20} className="text-indigo-400" />
-                                                    </div>
-                                                    <div>
-                                                        <p className="text-sm font-bold text-white mb-1 leading-tight">
-                                                            {item.product_name || item.products?.name || "Noma'lum"}
-                                                        </p>
-                                                        <p className="text-xs font-medium text-slate-400">
-                                                            Soni: <span className="text-white">{item.quantity} ta</span>
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                                <div className="text-right shrink-0">
-                                                    <p className="text-xs font-bold text-white">
-                                                        {formatCurrency(item.price || item.products?.price)}
-                                                    </p>
-                                                    <p className="text-[10px] font-medium text-slate-500 mt-1">
-                                                        (dona narx)
-                                                    </p>
-                                                </div>
+            {/* Simple Modal */}
+            {selectedOrder && (
+                <div className="fixed inset-0 z-[9999] flex items-center justify-center p-6">
+                    <div className="absolute inset-0 bg-[#2D241E]/60 backdrop-blur-md" onClick={() => setSelectedOrder(null)} />
+                    <div className="relative w-full max-w-sm bg-[#FDFBF7] rounded-[3rem] p-8 shadow-2xl animate-in zoom-in-95 duration-300">
+                        
+                        <div className="flex items-center justify-between mb-8">
+                            <h3 className="text-lg font-black text-[#2D241E] uppercase italic">Buyurtma</h3>
+                            <button onClick={() => setSelectedOrder(null)} className="w-10 h-10 bg-white border border-[#E8E2D9] rounded-xl flex items-center justify-center text-[#2D241E]/20">
+                                <X size={20} />
+                            </button>
+                        </div>
+
+                        <div className="space-y-6">
+                            {/* Customer */}
+                            <div>
+                                <p className="text-[9px] font-black text-[#2D241E]/20 uppercase tracking-widest mb-1">Mijoz</p>
+                                <h4 className="text-xl font-black text-[#2D241E] uppercase italic">{selectedOrder.customer_name}</h4>
+                            </div>
+
+                            {/* Products */}
+                            <div className="space-y-3">
+                                <p className="text-[9px] font-black text-[#2D241E]/20 uppercase tracking-widest mb-1">Mahsulotlar</p>
+                                <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-2 scrollbar-hide">
+                                    {(selectedOrder.order_items || []).map((item, i) => (
+                                        <div key={i} className="flex justify-between items-center py-2 border-b border-[#E8E2D9]/30 last:border-0">
+                                            <div className="flex-1 min-w-0 pr-4">
+                                                <p className="text-[11px] font-black text-[#2D241E] uppercase truncate">{item.product_name}</p>
+                                                <p className="text-[9px] font-bold text-[#8B5E3C] uppercase">{item.quantity} ta</p>
                                             </div>
-                                        ))
-                                    ) : (
-                                        <p className="text-sm text-slate-500">Mahsulotlar topilmadi</p>
-                                    )}
+                                            <p className="text-[11px] font-black text-[#2D241E] tabular-nums">${(Number(item.quantity) * Number(item.product_price)).toLocaleString()}</p>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
 
-                            <div className="p-4 rounded-2xl bg-indigo-600 border border-indigo-500 shadow-lg shadow-indigo-600/20">
-                                <div className="flex items-end justify-between">
-                                    <div>
-                                        <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-200 mb-1">
-                                            Jami Summa
-                                        </p>
-                                        <p className="text-xl font-bold text-white">
-                                            {formatCurrency(selectedOrder.total)}
-                                        </p>
-                                    </div>
-                                    <span className={`text-[10px] uppercase font-bold px-2 py-1 rounded bg-white/20 text-white`}>
-                                        {selectedOrder.status}
-                                    </span>
-                                </div>
+                            {/* Total */}
+                            <div className="pt-6 border-t border-[#E8E2D9] flex items-center justify-between">
+                                <p className="text-[10px] font-black text-[#2D241E]/20 uppercase tracking-widest">Jami</p>
+                                <p className="text-2xl font-black text-[#2D241E] italic tabular-nums">${Number(selectedOrder.total).toLocaleString()}</p>
                             </div>
                         </div>
                     </div>

@@ -4,11 +4,11 @@ import { LayoutGrid, BarChart2, Users, Wallet, ShoppingCart } from 'lucide-react
 
 export default function BottomNav({ activeTab, setActiveTab, role }) {
     const navItems = [
-        { id: 'dashboard', label: 'Asosiy', icon: LayoutGrid, roles: ['admin', 'manager', 'finance', 'staff'] },
-        { id: 'orders', label: 'Buyurtmalar', icon: ShoppingCart, roles: ['admin', 'manager', 'staff'] },
-        { id: 'stats', label: 'Statistika', icon: BarChart2, roles: ['admin', 'manager'] },
-        { id: 'employees', label: 'Xodimlar', icon: Users, roles: ['admin', 'manager', 'finance'] },
-        { id: 'finance', label: 'Moliya', icon: Wallet, roles: ['admin', 'finance'] },
+        { id: 'dashboard', label: 'Asosiy', icon: LayoutGrid, roles: ['admin', 'crm', 'erp', 'seller'] },
+        { id: 'orders', label: 'Buyurtmalar', icon: ShoppingCart, roles: ['admin', 'crm', 'erp', 'seller'] },
+        { id: 'stats', label: 'Statistika', icon: BarChart2, roles: ['admin', 'crm', 'erp'] },
+        { id: 'employees', label: 'Xodimlar', icon: Users, roles: ['admin', 'crm', 'erp'] },
+        { id: 'finance', label: 'Moliya', icon: Wallet, roles: ['admin', 'crm'] },
     ]
 
     // Filter items based on the active role

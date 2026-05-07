@@ -1,4 +1,7 @@
 import { supabase } from '@/lib/supabase'
+
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+
 import { isDeletedAtMissingError } from '@/lib/orderTrash'
 import { formatUsd } from '@/utils/formatters'
 export { formatUsd }
@@ -95,42 +98,76 @@ export const ORDERS_SELECT_FALLBACKS = [
 `,
 ]
 
-export async function fetchOrdersPageWithFallback(options = {}) {
-    const { activeOnly = true } = options
+export async function fetchOrdersPageWithFallback() {
+    try {
+        const res = await fetch(`${API_URL}/orders`);
+        if (!res.ok) throw new Error('orders load failed (backend)');
+        const data = await res.json();
+        
+        // Normalize products nested relation string mappings
+        const mappedData = (data || []).map(o => ({
+            ...o,
+            order_items: (o.order_items || []).map(oi => ({
+               ...oi,
+               price: oi.price ?? oi.product_price ?? 0,
+               products: oi.product ? {
+                   ...oi.product,
+                   categories: oi.product.category
+               } : null
+            }))
+        }));
 
-    async function trySelect(useDeletedFilter) {
-        for (const sel of ORDERS_SELECT_FALLBACKS) {
-            let q = supabase.from('orders').select(sel).order('created_at', { ascending: false })
-            if (useDeletedFilter && activeOnly) q = q.is('deleted_at', null)
-            const res = await q
-            if (!res.error) return res
-            if (useDeletedFilter && activeOnly && isDeletedAtMissingError(res.error)) return null
-            if (!isSchemaOrEmbedError(res.error)) return res
-            console.warn('orders select fallback:', res.error?.message)
-        }
-        return { data: null, error: new Error('orders load failed') }
+        return { data: mappedData, error: null };
+    } catch (e) {
+        return { data: null, error: e };
     }
+}
 
-    if (activeOnly) {
-        const first = await trySelect(true)
-        if (first !== null) return first
+export async function fetchProducts() {
+    try {
+        const res = await fetch(`${API_URL}/products`);
+        if (!res.ok) throw new Error('products fetch failed');
+        const data = await res.json();
+        return { data, error: null };
+    } catch (e) {
+        return { data: [], error: e };
     }
-    return trySelect(false)
 }
 
 export async function fetchDeletedOrdersPageWithFallback() {
-    for (const sel of ORDERS_SELECT_FALLBACKS) {
-        const res = await supabase
-            .from('orders')
-            .select(sel)
-            .not('deleted_at', 'is', null)
-            .order('created_at', { ascending: false })
-        if (!res.error) return res
-        if (isDeletedAtMissingError(res.error)) return { data: [], error: null }
-        if (!isSchemaOrEmbedError(res.error)) return res
-        console.warn('deleted orders select fallback:', res.error?.message)
+    try {
+        const res = await fetch(`${API_URL}/orders/trash`);
+        if (!res.ok) throw new Error('trash orders load failed');
+        const data = await res.json();
+
+        const mappedData = (data || []).map(o => ({
+            ...o,
+            order_items: (o.order_items || []).map(oi => ({
+               ...oi,
+               price: oi.price ?? oi.product_price ?? 0,
+               products: oi.product ? {
+                   ...oi.product,
+                   categories: oi.product.category
+               } : null
+            }))
+        }));
+
+        return { data: mappedData, error: null };
+    } catch (e) {
+        return { data: [], error: null };
     }
-    return { data: [], error: null }
+}
+
+export async function restoreOrder(id) {
+    try {
+        const res = await fetch(`${API_URL}/orders/${id}/restore`, {
+            method: 'PATCH'
+        });
+        if (!res.ok) throw new Error('restore failed');
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e };
+    }
 }
 
 const ORDER_ITEMS_FOR_ORDER_FALLBACKS = [
@@ -142,34 +179,47 @@ const ORDER_ITEMS_FOR_ORDER_FALLBACKS = [
 ]
 
 export async function fetchOrderItemsForOrderId(orderId) {
-    for (const cfg of ORDER_ITEMS_FOR_ORDER_FALLBACKS) {
-        let q = supabase.from('order_items').select(cfg.select).eq('order_id', orderId)
-        q =
-            cfg.order === 'line_index'
-                ? q.order('line_index', { ascending: true })
-                : q.order('created_at', { ascending: true })
-        const r = await q
-        if (!r.error) return r
-        if (!isSchemaOrEmbedError(r.error)) return r
-        console.warn('order_items select fallback:', r.error?.message)
+    try {
+        const res = await fetch(`${API_URL}/orders/${orderId}`);
+        if (!res.ok) throw new Error('order_items fetch failed');
+        const order = await res.json();
+        const items = (order.order_items || []).map(oi => ({
+           ...oi,
+           price: oi.price ?? oi.product_price ?? 0, // Ensure compatibility
+           products: oi.product ? {
+               ...oi.product,
+               categories: oi.product.category
+           } : null
+        }));
+        // Sort by line_index
+        items.sort((a,b) => (a.line_index || 0) - (b.line_index || 0));
+        return { data: items, error: null };
+    } catch (e) {
+        return { data: null, error: e };
     }
-    return { data: null, error: new Error('order_items fetch failed') }
 }
 
 export async function fetchOrderItemsForOrderIds(orderIds) {
     if (!orderIds?.length) return { data: [], error: null }
-    for (const cfg of ORDER_ITEMS_FOR_ORDER_FALLBACKS) {
-        let q = supabase.from('order_items').select(cfg.select).in('order_id', orderIds)
-        q =
-            cfg.order === 'line_index'
-                ? q.order('line_index', { ascending: true })
-                : q.order('created_at', { ascending: true })
-        const r = await q
-        if (!r.error) return r
-        if (!isSchemaOrEmbedError(r.error)) return r
-        console.warn('order_items (in) select fallback:', r.error?.message)
+    try {
+        // Since we don't have a batch endpoint yet, and GET /api/orders includes items,
+        // we fetch all and filter, or fetch individually. Fetching all is easier if it's not too large.
+        const res = await fetch(`${API_URL}/orders`);
+        if (!res.ok) throw new Error('batch order items load failed');
+        const allOrders = await res.json();
+        const selected = allOrders.filter(o => orderIds.includes(o.id));
+        const allItems = selected.flatMap(o => (o.order_items || []).map(oi => ({
+            ...oi,
+            price: oi.price ?? oi.product_price ?? 0,
+            products: oi.product ? {
+                ...oi.product,
+                categories: oi.product.category
+            } : null
+        })));
+        return { data: allItems, error: null };
+    } catch (e) {
+        return { data: null, error: e };
     }
-    return { data: null, error: new Error('order_items batch fetch failed') }
 }
 
 /** Model kodi solishtirish: probel, tire, katta/kichik harf */
@@ -189,13 +239,20 @@ export function normalizeOrderItemColorKey(color) {
 /** Supabase qatorida ko‘rinadigan nom (asosiy nom bo‘sh bo‘lsa — lokalizatsiya) */
 export function displayProductName(p) {
     if (!p) return ''
-    return (
-        (p.name && String(p.name).trim()) ||
-        (p.name_uz && String(p.name_uz).trim()) ||
-        (p.name_ru && String(p.name_ru).trim()) ||
-        (p.name_en && String(p.name_en).trim()) ||
-        'Mahsulot'
-    )
+    const name = (p.name && String(p.name).trim()) ||
+                 (p.name_uz && String(p.name_uz).trim()) ||
+                 (p.name_ru && String(p.name_ru).trim()) ||
+                 (p.name_en && String(p.name_en).trim())
+    
+    if (name) return name
+
+    // Fallback to SKU/Size if no name is found
+    const code = (p.sku && String(p.sku).trim()) || 
+                 (p.size && String(p.size).trim())
+    
+    if (code) return `Mahsulot (${code})`
+
+    return 'Nomsiz mahsulot'
 }
 
 export function productNameFields(p) {
@@ -240,6 +297,37 @@ export function normalizeColorsArray(p) {
     })
 }
 
+/** CRMda rasmlar ko‘pincha images massivida (bitta qator) */
+export function normalizeImagesArray(p) {
+    if (!p) return []
+    const raw = p.images
+    let arr = []
+    if (Array.isArray(raw)) {
+        arr = raw.map((x) => String(x).trim()).filter(Boolean)
+    } else if (raw != null && String(raw).trim() !== '') {
+        const s = String(raw).trim()
+        if (s.startsWith('[') || s.startsWith('{')) {
+            try {
+                const j = JSON.parse(s)
+                if (Array.isArray(j)) arr = j.map((x) => String(x).trim()).filter(Boolean)
+            } catch {
+                arr = [s]
+            }
+        } else {
+            arr = [s]
+        }
+    }
+    if (!arr.length && p.image_url && String(p.image_url).trim()) {
+        arr = [String(p.image_url).trim()]
+    }
+    const seen = new Set()
+    return arr.filter((url) => {
+        if (!url || seen.has(url)) return false
+        seen.add(url)
+        return true
+    })
+}
+
 /**
  * product_colors qatori bo‘yicha joriy tilda rang nomi (Mahsulotlar bilan bir xil mantiq).
  * canonicalName — mahsulotda saqlangan kalit (odatda product_colors.name).
@@ -266,11 +354,11 @@ export function expandOrderLineForSubmit(line) {
     const noteTrim = String(line.local_note ?? '').trim()
     const sourceLineId = String(line.id || '')
     const keepSeparate = Boolean(line.keepSeparate)
-    if (line.colorChoices?.length > 1) {
+    if ((line.colorChoices?.length || 0) >= 1) {
         /** Bir xil rang kaliti (takrorlangan colorChoices yoki yozuv farqi) bitta DB qatorida yig‘iladi */
         const byNorm = new Map()
         for (const c of line.colorChoices) {
-            const q = parseFloat(String(line.colorQtyByColor?.[c] ?? '0')) || 0
+            const q = parseOrderItemQty(line.colorQtyByColor?.[c] ?? '0')
             if (q <= 0) continue
             const nk = normalizeModelKey(String(c))
             const prev = byNorm.get(nk)
@@ -291,14 +379,14 @@ export function expandOrderLineForSubmit(line) {
                 color: label,
                 quantity: String(qty),
                 image_url: img,
-                line_note: noteTrim,
+                local_note: noteTrim,
                 source_line_id: sourceLineId,
                 keep_separate: keepSeparate
             })
         }
         return rows
     }
-    const q = parseFloat(String(line.quantity ?? '0')) || 0
+    const q = parseOrderItemQty(line.quantity ?? '0')
     if (q <= 0) return []
     return [
         {
@@ -309,7 +397,7 @@ export function expandOrderLineForSubmit(line) {
             color: line.color || '',
             quantity: String(q),
             image_url: img,
-            line_note: noteTrim,
+            local_note: noteTrim,
             source_line_id: sourceLineId,
             keep_separate: keepSeparate
         }
@@ -675,7 +763,7 @@ export function canonicalizeExcelImportRow(r) {
     }
     fill('customer_name', 'mijoz', 'buyurtmachi')
     fill('customer_phone', 'telefon', 'phone')
-    fill('model_code', 'kod')
+    fill('model_code', 'kod', 'artikul', 'артикул')
     fill('unit_price', 'narx')
     fill('quantity', 'miqdor')
     fill('color', 'rang')
@@ -751,26 +839,7 @@ export function groupImportedExcelRowsToOrders(rows) {
         if (r.order_number != null && String(r.order_number).trim() !== '') return true
         return false
     })
-    if (!hasExplicitGrouping) {
-        /** Shablon rejimi: ketma-ket qatorlarda `Клиент + Дата` almashsa yangi buyurtma boshlanadi. */
-        const groups = []
-        let current = []
-        let prevMarker = ''
-        for (const r of normalized) {
-            const marker = `${String(r.customer_name || '').trim()}|${String(r.order_created_at || '').trim()}`
-            const idxVal = Number(r.line_index)
-            const startsByIndex = Number.isFinite(idxVal) ? idxVal <= 1 : false
-            const startsByMarker = marker !== '' && prevMarker !== '' && marker !== prevMarker
-            if ((startsByMarker || startsByIndex) && current.length) {
-                groups.push(current)
-                current = []
-            }
-            current.push(r)
-            if (marker !== '') prevMarker = marker
-        }
-        if (current.length) groups.push(current)
-        return groups
-    }
+    /** Global guruhlash: Ism + Telefon bir xil bo'lgan barcha qatorlarni bitta buyurtmaga yig'ish. */
     const map = new Map()
     for (const r of normalized) {
         const ig = r.import_group ?? r.import_gr
@@ -780,11 +849,15 @@ export function groupImportedExcelRowsToOrders(rows) {
         } else if (r.order_id && String(r.order_id).trim()) {
             key = `oid:${String(r.order_id).trim()}`
         } else {
-            key = `fb:${String(r.customer_name || '').trim()}|${String(r.customer_phone || '').trim()}|${String(r.order_number || '').trim()}`
+            // Ism va telefon bo'yicha global guruhlash
+            const name = String(r.customer_name || '').trim().toLowerCase()
+            const phone = String(r.customer_phone || '').trim().toLowerCase()
+            key = `fb:${name}|${phone}`
         }
         if (!map.has(key)) map.set(key, [])
         map.get(key).push(r)
     }
+    
     return Array.from(map.values()).map((lines) => {
         lines.sort((a, b) => {
             const ai = Number(a.line_index)
@@ -906,8 +979,8 @@ export function mergeExpandedRowsForSubmit(rows, productsList) {
         const pid = String(r.product_id ?? '')
         const col = normalizeOrderItemColorKey(r.color)
         const code = normalizeModelKey(resolvedModelCodeForExpandedRow(r, plist))
-        const separateKey = String(r.source_line_id || '')
-        const key = separateKey ? `${pid}|${col}|${code}|sep:${separateKey}` : `${pid}|${col}|${code}`
+        const separateKey = String(r.source_line_id || r.id || '')
+        const key = separateKey ? `${pid}|${col}|${code}|sep:${separateKey}` : `${pid}|${col}|${code}|row:${Math.random()}`
         const q = parseOrderItemQty(r.quantity)
         const prev = map.get(key)
         if (!prev) {
@@ -918,7 +991,7 @@ export function mergeExpandedRowsForSubmit(rows, productsList) {
         map.set(key, {
             ...prev,
             quantity: String(pq + q),
-            line_note: mergeLineNotes(prev.line_note, r.line_note)
+            local_note: mergeLineNotes(prev.local_note, r.local_note || r.line_note)
         })
     }
     return Array.from(map.values())
@@ -938,8 +1011,8 @@ export function mergeOrderItemPayloadsForDb(payloads, productsList) {
         const pid = String(p.product_id ?? '')
         const sz = normalizeModelKey(resolvedModelCodeForItemPayload(p, plist))
         const col = normalizeOrderItemColorKey(p.color)
-        const separateKey = String(p.__separateKey || '')
-        const key = separateKey ? `${pid}|${sz}|${col}|sep:${separateKey}` : `${pid}|${sz}|${col}`
+        const separateKey = String(p.__separateKey || p.source_line_id || '')
+        const key = separateKey ? `${pid}|${sz}|${col}|sep:${separateKey}` : `${pid}|${sz}|${col}|row:${Math.random()}`
         const q = parseOrderItemQty(p.quantity)
         const qty = q > 0 ? q : 0
         if (qty <= 0) continue
@@ -963,7 +1036,7 @@ export function mergeOrderItemPayloadsForDb(payloads, productsList) {
                 quantity: nq,
                 price: newPrice,
                 subtotal: sumMoney,
-                line_note: mergeLineNotes(prev.line_note, p.line_note)
+                local_note: mergeLineNotes(prev.local_note || prev.line_note, p.local_note || p.line_note)
             })
         }
     }
@@ -1467,8 +1540,8 @@ export function mergeDuplicateSourceLineIntoTarget(orderLines, targetId, sourceL
     if (!target || !sourceLine || !product || targetId === sourceLine.id) return orderLines
 
     const colorOpts = normalizeColorsArray(product)
-    const targetMatrix = (target.colorChoices?.length || 0) > 1
-    const sourceMatrix = (sourceLine.colorChoices?.length || 0) > 1
+    const targetMatrix = (target.colorChoices?.length || 0) >= 1
+    const sourceMatrix = (sourceLine.colorChoices?.length || 0) >= 1
     const productMulti = colorOpts.length > 1
 
     let nextTarget = { ...target }
@@ -1743,7 +1816,7 @@ export function orderItemsToOrderLines(orderItems, productsList) {
 export function computeOrderLineSubtotal(line) {
     if (!line?.product_id) return 0
     const pr = Number(line.product_price) || 0
-    const matrix = (line.colorChoices?.length || 0) > 1
+    const matrix = (line.colorChoices?.length || 0) >= 1
     if (matrix) {
         let rowSum = 0
         for (const c of line.colorChoices) {

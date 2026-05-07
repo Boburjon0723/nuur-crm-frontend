@@ -24,6 +24,24 @@ export function mergeErpStoreInventoryRow(product) {
  */
 export function mergeProductInventoryRow(product) {
   if (!product || typeof product !== 'object') return product
+  
+  // Handle Prisma format: product.inventory = [{ colorKey, stock }, ...]
+  if (Array.isArray(product.inventory)) {
+    const next = { ...product }
+    const map = {}
+    let total = 0
+    product.inventory.forEach(item => {
+      const q = Number(item.stock) || 0
+      map[item.colorKey || 'default'] = q
+      total += q
+    })
+    next.stock = total
+    next.stock_by_color = map
+    next.inventory_status = deriveInventoryStatusFromQty(total)
+    return next
+  }
+
+  // Legacy Supabase format
   const inv = product.product_inventory
   const row = Array.isArray(inv) ? inv[0] : inv
   const next = { ...product }
