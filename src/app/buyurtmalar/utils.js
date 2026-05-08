@@ -732,8 +732,8 @@ export function exportCompletedOrdersExcelFlatRowsToFile(rows, filename) {
 
 export function normalizeImportedExcelCellKey(key) {
     return String(key || '')
+        .replace(/[\uFEFF\u00A0]/g, '') // Remove BOM and non-breaking spaces
         .trim()
-        .replace(/\uFEFF/g, '')
         .toLowerCase()
         .replace(/\s+/g, '_')
 }
@@ -761,19 +761,14 @@ export function canonicalizeExcelImportRow(r) {
             }
         }
     }
-    fill('customer_name', 'mijoz', 'buyurtmachi')
-    fill('customer_phone', 'telefon', 'phone')
-    fill('model_code', 'kod', 'artikul', 'артикул')
-    fill('unit_price', 'narx')
-    fill('quantity', 'miqdor')
-    fill('color', 'rang')
-    fill('customer_name', 'клиент')
-    fill('product_name', 'наименование')
-    fill('image_url', 'фото', 'image', 'image_url')
-    fill('model_code', 'код')
-    fill('color', 'цвет')
-    fill('quantity', 'кол-во')
-    fill('unit_price', 'цена')
+    fill('customer_name', 'mijoz', 'buyurtmachi', 'клиент', 'фио')
+    fill('customer_phone', 'telefon', 'phone', 'номер', 'тел')
+    fill('model_code', 'kod', 'artikul', 'артикул', 'код', 'mahsulot_kodi', 'sku', 'size')
+    fill('product_name', 'mahsulot', 'mahsulot_nomi', 'nomi', 'name', 'наименование', 'название', 'товар')
+    fill('image_url', 'foto', 'image', 'image_url')
+    fill('color', 'rang', 'цвет')
+    fill('quantity', 'miqdor', 'кол-во', 'количество', 'soni', 'qator_miqdori')
+    fill('unit_price', 'narx', 'цена', 'birlik_narxi')
     fill('order_created_at', 'дата')
     fill('line_total', 'сумма')
     fill('order_number', 'buyurtma', 'buyurtma_raqami')
@@ -878,7 +873,9 @@ export function readOrdersImportWorkbookRows(arrayBuffer) {
         wb.SheetNames[0]
     if (!prefer) return []
     const sheet = wb.Sheets[prefer]
-    return XLSX.utils.sheet_to_json(sheet, { defval: '' })
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' })
+    // Add original row number (assuming headers are in row 1, data starts at row 2)
+    return rows.map((r, i) => ({ ...r, __row_index: i + 2 }))
 }
 
 /**

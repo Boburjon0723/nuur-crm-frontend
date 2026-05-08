@@ -1918,26 +1918,32 @@ function BuyurtmalarPageContent() {
         }
 
         for (const row of group) {
+            const rowNum = row.__row_index || '?'
             const res = resolveProductForExcelImportRow(row)
             const failingCode = String(row.model_code || row.product_name || '').trim() || '—'
-            
+            const codeColLabel = row.model_code ? t('orders.modelCode') : t('orders.lineProduct')
+
             if (!res.list?.length) {
-                const msg =
-                    res.reason === 'empty'
-                        ? t('orders.codeEmpty')
-                        : res.reason === 'ambiguous'
-                          ? `${t('orders.codeAmbiguous')} ("${failingCode}")`
-                          : `${t('orders.codeNotFound')} ("${failingCode}")`
-                throw new Error(msg)
+                let errorType = ''
+                if (res.reason === 'empty') {
+                    errorType = t('orders.codeEmpty')
+                } else if (res.reason === 'ambiguous') {
+                    errorType = `${t('orders.excelImportAmbiguous')} ("${failingCode}")`
+                } else {
+                    errorType = `${t('orders.excelImportNotFound')} ("${failingCode}")`
+                }
+                throw new Error(`${t('orders.excelImportRow')} ${rowNum}: ${t('orders.excelImportColumn')} "${codeColLabel}" - ${errorType}`)
             }
             if (res.list.length > 1) {
                 throw new Error(
-                    `${t('orders.codeAmbiguous')} ("${failingCode}")`
+                    `${t('orders.excelImportRow')} ${rowNum}: ${t('orders.excelImportColumn')} "${codeColLabel}" - ${t('orders.excelImportAmbiguous')} ("${failingCode}")`
                 )
             }
             const product = res.list[0]
             const qty = parseOrderItemQty(row.quantity)
-            if (qty <= 0) throw new Error(t('orders.excelImportBadQty'))
+            if (qty <= 0) {
+                throw new Error(`${t('orders.excelImportRow')} ${rowNum}: ${t('orders.excelImportColumn')} "${t('orders.quantity')}" - ${t('orders.excelImportBadQty')}`)
+            }
             const up = Number(row.unit_price)
             const price =
                 Number.isFinite(up) && up >= 0

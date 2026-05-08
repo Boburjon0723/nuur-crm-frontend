@@ -416,6 +416,10 @@ export const translations = {
             excelImportTitle:
                 'Varaq: `CRM_qatorlar` (eksport bilan bir xil). Bir buyurtmaning barcha qatorlarida `import_group` bir xil bo‘lsin.',
             excelImportNoRows: 'Faylda qatorlar yo‘q yoki varaq noto‘g‘ri.',
+            excelImportRow: 'Qator',
+            excelImportColumn: 'Ustun',
+            excelImportNotFound: 'topilmadi',
+            excelImportAmbiguous: 'bir nechta mos keldi',
             excelImportConfirm: 'Barcha guruhlar yangi buyurtma sifatida yozilsinmi?',
             excelImportDone: 'ta buyurtma import qilindi.',
             excelImportPartial: 'Qisman import. Muvaffaqiyat:',
@@ -1814,6 +1818,10 @@ export const translations = {
             excelImportTitle:
                 'Лист CRM_qatorlar (как при экспорте). У всех строк одного заказа одинаковый import_group.',
             excelImportNoRows: 'Нет строк или неверный лист.',
+            excelImportRow: 'Строка',
+            excelImportColumn: 'Столбец',
+            excelImportNotFound: 'не найден',
+            excelImportAmbiguous: 'найдено несколько совпадений',
             excelImportConfirm: 'Импортировать все группы как новые заказы?',
             excelImportDone: 'заказов импортировано.',
             excelImportPartial: 'Частичный импорт. Успешно:',
